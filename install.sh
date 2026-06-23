@@ -198,14 +198,12 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
                     k1=""
                     k2=""
                     IFS= read -rsn1 -t 0.1 k1 || true
-                    IFS= read -rsn1 -t 0.1 k2 || true
                     if [[ "$k1" == "[" || "$k1" == "O" ]]; then
+                        IFS= read -rsn1 -t 0.1 k2 || true
                         if [[ "$k2" == "A" || "$k2" == "D" ]]; then
-                            cursor=$((cursor - 1))
-                            if [[ $cursor -lt 0 ]]; then cursor=$((${#options[@]} - 1)); fi
+                            cursor=$(( (cursor - 1 + ${#options[@]}) % ${#options[@]} ))
                         elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
-                            cursor=$((cursor + 1))
-                            if [[ $cursor -ge ${#options[@]} ]]; then cursor=0; fi
+                            cursor=$(( (cursor + 1) % ${#options[@]} ))
                         fi
                     fi
                     ;;
