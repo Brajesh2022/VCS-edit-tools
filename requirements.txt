@@ -1,0 +1,4 @@
+# vcs-edit CLI — no external dependencies required
+# stdlib only: json, os, sys, tempfile, difflib, hashlib, subprocess, argparse
+# dev / test only:
+# pytest>=8.0

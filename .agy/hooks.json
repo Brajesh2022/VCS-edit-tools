@@ -1,0 +1,10 @@
+{
+  "inject-vcs-instructions": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "bash /home/runner/.gemini/config/plugins/vcs-edit/scripts/inject.sh"
+      }
+    ]
+  }
+}

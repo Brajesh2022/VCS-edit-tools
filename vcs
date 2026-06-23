@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# VCS Edit Tool — blob-hash-based file editing CLI for AI agents.
+#
+# Usage:
+#   vcs read path/to/file.py 801-1200
+#   vcs replace <blob|path> 8-50 << 'EOF'
+#   new content
+#   EOF
+#   vcs insert <blob|path> 10 << 'EOF'
+#   new line
+#   EOF
+#   vcs delete <blob|path> 5-8
+#   vcs batch << 'EOF'
+#   [{"target":"a3f9","type":"replace","line_range":"8-50","content":"code"}]
+#   EOF
+#   vcs diff <blob|path>
+#   vcs skeleton path/to/file.py [start-end]
+#   vcs tree [path] [--depth N] [--all]
+#   vcs grep <query> [path] [-i] [-r]
+#   vcs fmt [--check] [path]
+#   vcs test <command> [args...]
+#   vcs status
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+exec python3 "$DIR/cli.py" "$@"
