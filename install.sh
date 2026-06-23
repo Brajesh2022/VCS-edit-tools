@@ -158,8 +158,10 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     divider
     printf "  %bAI Agent Plugins%b\n" "${BOLD}" "${RESET}"
     
-    options=("Antigravity (.agy)" "Skip")
-    selected=0
+    options=("Antigravity (.agy)" "Claude (.claude)" "Fake Tool (.fk1)")
+    plugin_ids=("antigravity" "claude" "faketool")
+    selections=(1 0 0)
+    cursor=0
     
     # Try to reassign stdin to tty for interactive input if piped
     if [ ! -t 0 ] && [ -c /dev/tty ]; then
@@ -168,28 +170,46 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     
     if [ -t 0 ]; then
         printf "\033[?25l" # Hide cursor
+        echo "  (Use arrow keys to move, SPACE to toggle, ENTER to confirm)"
         while true; do
             for i in "${!options[@]}"; do
-                if [[ $i -eq $selected ]]; then
-                    printf "\r\033[K  %b> ◉ %s%b\n" "${CYAN}${BOLD}" "${options[$i]}" "${RESET}"
+                if [[ $i -eq $cursor ]]; then
+                    prefix="${CYAN}${BOLD}  > "
                 else
-                    printf "\r\033[K    ◯ %s\n" "${options[$i]}"
+                    prefix="    "
                 fi
+                
+                if [[ ${selections[$i]} -eq 1 ]]; then
+                    box="[x]"
+                else
+                    box="[ ]"
+                fi
+                
+                printf "\r\033[K%b%s %s%b\n" "$prefix" "$box" "${options[$i]}" "${RESET}"
             done
             
             key=""
-            # Read 1 char. If it fails, fallback to break
             if ! read -rsn1 key; then
                 break
             fi
             
             case "$key" in
                 $'\x1b')
-                    read -rsn2 key || true
-                    if [[ "$key" == "[A" || "$key" == "[D" ]]; then
-                        ((selected--)); [[ $selected -lt 0 ]] && selected=$((${#options[@]} - 1))
-                    elif [[ "$key" == "[B" || "$key" == "[C" ]]; then
-                        ((selected++)); [[ $selected -ge ${#options[@]} ]] && selected=0
+                    read -rsn1 -t 0.1 k1 || continue
+                    read -rsn1 -t 0.1 k2 || continue
+                    if [[ "$k1" == "[" || "$k1" == "O" ]]; then
+                        if [[ "$k2" == "A" || "$k2" == "D" ]]; then
+                            ((cursor--)); [[ $cursor -lt 0 ]] && cursor=$((${#options[@]} - 1))
+                        elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
+                            ((cursor++)); [[ $cursor -ge ${#options[@]} ]] && cursor=0
+                        fi
+                    fi
+                    ;;
+                " ")
+                    if [[ ${selections[$cursor]} -eq 1 ]]; then
+                        selections[$cursor]=0
+                    else
+                        selections[$cursor]=1
                     fi
                     ;;
                 "") break ;;
@@ -197,34 +217,32 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
             printf "\033[%dA" "${#options[@]}"
         done
         printf "\033[?25h\n" # Restore cursor
+        
+        SELECTED_PLUGINS=""
+        for i in "${!options[@]}"; do
+            if [[ ${selections[$i]} -eq 1 ]]; then
+                SELECTED_PLUGINS="${SELECTED_PLUGINS}${plugin_ids[$i]},"
+            fi
+        done
+        [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
+        
     else
         # Fallback if no TTY is detected
         echo "  1) Antigravity (.agy)"
-        echo "  2) Skip"
+        echo "  2) Claude (.claude)"
+        echo "  3) Fake Tool (.fk1)"
+        echo "  4) Skip"
         echo ""
-        read -p "  Select an option (1-2) [default: 1]: " choice || choice="1"
+        read -p "  Select an option (1-4) [default: 1]: " choice || choice="1"
         case "${choice:-1}" in
-            1) selected=0 ;;
-            2) selected=1 ;;
-            *) selected=1 ;;
+            1) SELECTED_PLUGINS="antigravity," ;;
+            2) SELECTED_PLUGINS="claude," ;;
+            3) SELECTED_PLUGINS="faketool," ;;
+            *) SELECTED_PLUGINS="none" ;;
         esac
     fi
     divider
-    
-    if [[ $selected -eq 0 ]]; then
-        SELECTED_PLUGINS="antigravity"
-    else
-        SELECTED_PLUGINS="none"
-    fi
 fi
-    
-    if [[ $selected -eq 0 ]]; then
-        SELECTED_PLUGINS="antigravity"
-    else
-        SELECTED_PLUGINS="none"
-    fi
-fi
-
 if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
     AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
     mkdir -p "$AGY_PLUGINS_DIR"
