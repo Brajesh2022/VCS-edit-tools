@@ -59,7 +59,7 @@ if [ "$deps_missing" = true ]; then
         exit 1
     fi
     echo ""
-    read -p "Do you want to automatically install missing dependencies? (y/n) " -n 1 -r
+    read -p "Do you want to automatically install missing dependencies? (y/n) " -n 1 -r < /dev/tty
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         if command -v pkg &> /dev/null; then
@@ -121,7 +121,7 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     echo "1) Antigravity (.agy)"
     echo "2) Skip plugin installation"
     echo "=================================================="
-    read -p "Select an option (1-2) [default: 1]: " choice
+    read -p "Select an option (1-2) [default: 1]: " choice < /dev/tty
     
     case "${choice:-1}" in
         1) SELECTED_PLUGINS="antigravity" ;;
