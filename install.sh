@@ -189,19 +189,23 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
             done
             
             key=""
-            if ! read -rsn1 key; then
+            if ! IFS= read -rsn1 key; then
                 break
             fi
             
             case "$key" in
                 $'\x1b')
-                    read -rsn1 -t 0.1 k1 || continue
-                    read -rsn1 -t 0.1 k2 || continue
+                    k1=""
+                    k2=""
+                    IFS= read -rsn1 -t 0.1 k1 || true
+                    IFS= read -rsn1 -t 0.1 k2 || true
                     if [[ "$k1" == "[" || "$k1" == "O" ]]; then
                         if [[ "$k2" == "A" || "$k2" == "D" ]]; then
-                            ((cursor--)); [[ $cursor -lt 0 ]] && cursor=$((${#options[@]} - 1))
+                            cursor=$((cursor - 1))
+                            if [[ $cursor -lt 0 ]]; then cursor=$((${#options[@]} - 1)); fi
                         elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
-                            ((cursor++)); [[ $cursor -ge ${#options[@]} ]] && cursor=0
+                            cursor=$((cursor + 1))
+                            if [[ $cursor -ge ${#options[@]} ]]; then cursor=0; fi
                         fi
                     fi
                     ;;
@@ -212,7 +216,9 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
                         selections[$cursor]=1
                     fi
                     ;;
-                "") break ;;
+                "" | $'\n' | $'\r')
+                    break
+                    ;;
             esac
             printf "\033[%dA" "${#options[@]}"
         done
