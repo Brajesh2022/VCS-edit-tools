@@ -21,22 +21,23 @@ curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/inst
 ```
 
 The installer will:
-1. Clone this repository to `~/.VCS-edit-tools`.
-2. Link the `vcs` command to your local bin directory (e.g., `~/.local/bin`).
-3. Prompt you to install AI agent plugins (currently supports Antigravity).
+1. Check for required dependencies (`git`, `python3`) and safely auto-install them via `pkg`/`apt`/`brew` if missing.
+2. Clone this repository to `~/.VCS-edit-tools`.
+3. Link the `vcs` command to your local bin directory (e.g., `~/.local/bin`).
+4. Provide an interactive menu to install AI agent plugins (currently supports Antigravity).
 
 ### Non-Interactive Installation (CI/CD)
 
-If you are using this in GitHub Actions or other CI/CD environments, you can pass `-y` to skip prompts:
+If you are using this in GitHub Actions or other CI/CD environments, you can pass `-y` to skip prompts. If dependencies are missing in `-y` mode, the script will safely fail.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y
 ```
 
-To automatically install plugins as well:
+To automatically install specific plugins, use the `--plugins` flag (accepts a comma-separated list like `antigravity` or `all`):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y --install-plugins
+curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y --plugins antigravity
 ```
 
 ## Usage
