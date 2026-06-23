@@ -17,11 +17,11 @@ It provides a rich set of commands for reading, replacing, inserting, and batch-
 You can install the CLI globally on your system using the cross-platform installer script. It supports Linux, macOS, Windows (Git Bash/WSL), and Android (Termux).
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Brajesh2022/vcs-cli/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash
 ```
 
 The installer will:
-1. Clone this repository to `~/.vcs-cli`.
+1. Clone this repository to `~/.VCS-edit-tools`.
 2. Link the `vcs` command to your local bin directory (e.g., `~/.local/bin`).
 3. Prompt you to install AI agent plugins (currently supports Antigravity).
 
@@ -30,13 +30,13 @@ The installer will:
 If you are using this in GitHub Actions or other CI/CD environments, you can pass `-y` to skip prompts:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Brajesh2022/vcs-cli/main/install.sh | bash -s -- -y
+curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y
 ```
 
 To automatically install plugins as well:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Brajesh2022/vcs-cli/main/install.sh | bash -s -- -y --install-plugins
+curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y --install-plugins
 ```
 
 ## Usage

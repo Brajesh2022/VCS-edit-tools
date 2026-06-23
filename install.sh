@@ -3,7 +3,7 @@
 set -e
 
 # Default installation directories
-INSTALL_DIR="$HOME/.vcs-cli"
+INSTALL_DIR="$HOME/.VCS-edit-tools"
 BIN_DIR="$HOME/.local/bin"
 
 # Detect OS
@@ -53,7 +53,7 @@ if [ -d "$INSTALL_DIR" ]; then
     git -C "$INSTALL_DIR" pull --quiet origin main || git -C "$INSTALL_DIR" pull --quiet origin master
 else
     echo "Cloning repository to $INSTALL_DIR..."
-    git clone --quiet https://github.com/Brajesh2022/vcs-cli.git "$INSTALL_DIR"
+    git clone --quiet https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR"
 fi
 
 # Setup bin directory
