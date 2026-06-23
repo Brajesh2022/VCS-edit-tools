@@ -24,11 +24,19 @@ fi
 
 # Parse arguments for non-interactive installation
 NON_INTERACTIVE=false
-INSTALL_PLUGINS=false
+SELECTED_PLUGINS=""
+
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -y|--yes) NON_INTERACTIVE=true ;;
-        --install-plugins) INSTALL_PLUGINS=true ;;
+        --plugins) 
+            SELECTED_PLUGINS="$2"
+            shift
+            ;;
+        --install-plugins) 
+            # backward compatibility
+            SELECTED_PLUGINS="antigravity"
+            ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -37,14 +45,40 @@ done
 echo "Installing VCS Edit CLI..."
 
 # Check dependencies
-if ! command -v git &> /dev/null; then
-    echo "Error: git is required but not installed."
-    exit 1
-fi
+deps_missing=false
+for cmd in git python3; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "Error: $cmd is required but not installed."
+        deps_missing=true
+    fi
+done
 
-if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 is required but not installed."
-    exit 1
+if [ "$deps_missing" = true ]; then
+    if [ "$NON_INTERACTIVE" = true ]; then
+        echo "Non-interactive mode: please install the missing dependencies manually."
+        exit 1
+    fi
+    echo ""
+    read -p "Do you want to automatically install missing dependencies? (y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if command -v pkg &> /dev/null; then
+            echo "Using pkg to install dependencies..."
+            pkg install -y git python
+        elif command -v apt &> /dev/null; then
+            echo "Using apt to install dependencies..."
+            sudo apt update && sudo apt install -y git python3
+        elif command -v brew &> /dev/null; then
+            echo "Using brew to install dependencies..."
+            brew install git python3
+        else
+            echo "Could not detect package manager. Please install git and python3 manually."
+            exit 1
+        fi
+    else
+        echo "Cannot proceed without dependencies. Exiting."
+        exit 1
+    fi
 fi
 
 # Clone or update repository
@@ -80,41 +114,34 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 # Plugin Installation
-if [ "$NON_INTERACTIVE" = true ]; then
-    if [ "$INSTALL_PLUGINS" = true ]; then
-        do_install_plugins=true
-    else
-        do_install_plugins=false
-    fi
-else
+if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     echo ""
-    read -p "Do you want to install AI Agent plugins for VCS Edit? (y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        do_install_plugins=true
-    else
-        do_install_plugins=false
-    fi
+    echo "=================================================="
+    echo "          AI Agent Plugins Installation           "
+    echo "=================================================="
+    echo "Which AI tool do you want to install plugins for?"
+    echo "1) Antigravity (.agy)"
+    echo "2) Skip plugin installation"
+    echo "=================================================="
+    read -p "Select an option (1-2) [default: 1]: " choice
+    
+    case "${choice:-1}" in
+        1) SELECTED_PLUGINS="antigravity" ;;
+        2) SELECTED_PLUGINS="none" ;;
+        *) SELECTED_PLUGINS="none" ;;
+    esac
 fi
 
-if [ "$do_install_plugins" = true ]; then
-    echo "Available plugins:"
-    echo "1) Antigravity (.agy)"
-    
-    if [ "$NON_INTERACTIVE" = true ]; then
-        choices="1"
-    else
-        read -p "Enter choices (e.g. 1): " choices
-    fi
-    
-    if [[ "$choices" == *"1"* ]]; then
-        echo "Installing Antigravity plugin..."
-        AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
-        mkdir -p "$AGY_PLUGINS_DIR"
+if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
+    echo "Installing Antigravity plugin..."
+    AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
+    mkdir -p "$AGY_PLUGINS_DIR"
+    if [ -d "$INSTALL_DIR/.agy" ]; then
         cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
         echo "Antigravity plugin installed to $AGY_PLUGINS_DIR"
+    else
+        echo "Warning: Antigravity plugin source not found in $INSTALL_DIR/.agy"
     fi
-    # Future tools like .claude can be added here
 fi
 
 echo ""
