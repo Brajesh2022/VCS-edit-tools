@@ -157,17 +157,42 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     echo ""
     divider
     printf "  %bAI Agent Plugins%b\n" "${BOLD}" "${RESET}"
-    echo "  1) Antigravity (.agy)"
-    echo "  2) Skip"
-    divider
-    read -p "  Select an option (1-2) [default: 1]: " choice </dev/tty || choice="1"
-    echo ""
     
-    case "${choice:-1}" in
-        1) SELECTED_PLUGINS="antigravity" ;;
-        2) SELECTED_PLUGINS="none" ;;
-        *) SELECTED_PLUGINS="none" ;;
-    esac
+    options=("Antigravity (.agy)" "Skip")
+    selected=0
+    
+    printf "\033[?25l" # Hide cursor
+    while true; do
+        for i in "${!options[@]}"; do
+            if [[ $i -eq $selected ]]; then
+                printf "\r\033[K  %b> ◉ %s%b\n" "${CYAN}${BOLD}" "${options[$i]}" "${RESET}"
+            else
+                printf "\r\033[K    ◯ %s\n" "${options[$i]}"
+            fi
+        done
+        
+        read -rsn1 key </dev/tty || break
+        case "$key" in
+            $'\x1b')
+                read -rsn2 key </dev/tty || break
+                if [[ "$key" == "[A" || "$key" == "[D" ]]; then
+                    ((selected--)); [[ $selected -lt 0 ]] && selected=$((${#options[@]} - 1))
+                elif [[ "$key" == "[B" || "$key" == "[C" ]]; then
+                    ((selected++)); [[ $selected -ge ${#options[@]} ]] && selected=0
+                fi
+                ;;
+            "") break ;;
+        esac
+        printf "\033[%dA" "${#options[@]}"
+    done
+    printf "\033[?25h\n" # Restore cursor and new line
+    divider
+    
+    if [[ $selected -eq 0 ]]; then
+        SELECTED_PLUGINS="antigravity"
+    else
+        SELECTED_PLUGINS="none"
+    fi
 fi
 
 if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
