@@ -273,55 +273,6 @@ def cmd_replace(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: replace-text
-# ---------------------------------------------------------------------------
-
-def cmd_replace_text(args: list[str]) -> None:
-    """vcs replace-text <target> << 'EOF' ..."""
-    if len(args) < 1:
-        _error("usage: vcs replace-text <target> << 'EOF'\\n<<<< TARGET\\n...\\n====\\n...\\n>>>>\\nEOF")
-
-    target = args[0]
-    content = _read_stdin()
-
-    blob_hash = _resolve_target(target)
-    search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
-    
-    if "<<<< TARGET\n" not in content or "====\n" not in content or ">>>>" not in content:
-        _error("invalid format. must contain <<<< TARGET, ====, and >>>>")
-
-    target_block = content.split("<<<< TARGET\n")[1].split("====\n")[0]
-    new_block = content.split("====\n")[1].split(">>>>")[0]
-    
-    from core.store import resolve_path
-    filepath = resolve_path(blob_hash, search_root=search_root)
-    if not filepath:
-        _error(f"blob hash '{blob_hash}' not found")
-        
-    with open(filepath, "r", encoding="utf-8") as f:
-        file_content = f.read()
-        
-    if file_content.count(target_block) == 0:
-        _error("TARGET block not found in file")
-    elif file_content.count(target_block) > 1:
-        _error("TARGET block found multiple times in file. Be more specific.")
-        
-    new_file_content = file_content.replace(target_block, new_block)
-    
-    tmp_path = _write_temp(new_file_content)
-    try:
-        from core.replace import replace as do_replace
-        total_lines = len(file_content.splitlines())
-        res = do_replace(blob_hash, f"1-{total_lines}", tmp_path, search_root=search_root)
-    except Exception as e:
-        _error(f"{type(e).__name__}: {e}")
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-    _print_edit_result(res)
-
-# ---------------------------------------------------------------------------
 # Command: insert
 # ---------------------------------------------------------------------------
 
@@ -858,7 +809,6 @@ def _print_numbered(content: str) -> None:
 COMMANDS = {
     "read": cmd_read,
     "replace": cmd_replace,
-    "replace-text": cmd_replace_text,
     "insert": cmd_insert,
     "delete": cmd_delete,
     "batch": cmd_batch,
