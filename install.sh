@@ -61,6 +61,14 @@ mkdir -p "$BIN_DIR"
 
 # Make the CLI executable and create symlink
 chmod +x "$INSTALL_DIR/vcs"
+
+# Fix shebang for Termux environment if applicable
+if [[ -n "$PREFIX" && "$PREFIX" == *"/usr"* && "$OS" == "Linux" ]]; then
+    if command -v termux-fix-shebang &> /dev/null; then
+        termux-fix-shebang "$INSTALL_DIR/vcs"
+    fi
+fi
+
 ln -sf "$INSTALL_DIR/vcs" "$BIN_DIR/vcs"
 
 echo "VCS Edit CLI installed successfully to $BIN_DIR/vcs"
