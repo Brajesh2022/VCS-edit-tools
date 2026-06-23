@@ -34,4 +34,6 @@ EOF
 # STATUS    vcs status                   # list all blob→filepath mappings
 
 # BLOB = file snapshot at read-time. Use hash OR filepath as <target>.
+# ⚡ THE MAGIC OF BLOBS: Never worry about line drift! The vcs CLI's 3-way merge automatically resolves line shifts.
+# Always use whatever blob hash you currently have in your context memory. Do NOT waste tokens re-reading a file just to get the "newest" blob or to update line numbers.
 # HEREDOC: always << 'EOF' for multiline — prevents $, backtick, quote eval.
