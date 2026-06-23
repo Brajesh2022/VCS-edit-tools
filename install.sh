@@ -161,32 +161,62 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     options=("Antigravity (.agy)" "Skip")
     selected=0
     
-    printf "\033[?25l" # Hide cursor
-    while true; do
-        for i in "${!options[@]}"; do
-            if [[ $i -eq $selected ]]; then
-                printf "\r\033[K  %b> ◉ %s%b\n" "${CYAN}${BOLD}" "${options[$i]}" "${RESET}"
-            else
-                printf "\r\033[K    ◯ %s\n" "${options[$i]}"
-            fi
-        done
-        
-        read -rsn1 key </dev/tty || break
-        case "$key" in
-            $'\x1b')
-                read -rsn2 key </dev/tty || break
-                if [[ "$key" == "[A" || "$key" == "[D" ]]; then
-                    ((selected--)); [[ $selected -lt 0 ]] && selected=$((${#options[@]} - 1))
-                elif [[ "$key" == "[B" || "$key" == "[C" ]]; then
-                    ((selected++)); [[ $selected -ge ${#options[@]} ]] && selected=0
+    # Try to reassign stdin to tty for interactive input if piped
+    if [ ! -t 0 ] && [ -c /dev/tty ]; then
+        exec < /dev/tty || true
+    fi
+    
+    if [ -t 0 ]; then
+        printf "\033[?25l" # Hide cursor
+        while true; do
+            for i in "${!options[@]}"; do
+                if [[ $i -eq $selected ]]; then
+                    printf "\r\033[K  %b> ◉ %s%b\n" "${CYAN}${BOLD}" "${options[$i]}" "${RESET}"
+                else
+                    printf "\r\033[K    ◯ %s\n" "${options[$i]}"
                 fi
-                ;;
-            "") break ;;
+            done
+            
+            key=""
+            # Read 1 char. If it fails, fallback to break
+            if ! read -rsn1 key; then
+                break
+            fi
+            
+            case "$key" in
+                $'\x1b')
+                    read -rsn2 key || true
+                    if [[ "$key" == "[A" || "$key" == "[D" ]]; then
+                        ((selected--)); [[ $selected -lt 0 ]] && selected=$((${#options[@]} - 1))
+                    elif [[ "$key" == "[B" || "$key" == "[C" ]]; then
+                        ((selected++)); [[ $selected -ge ${#options[@]} ]] && selected=0
+                    fi
+                    ;;
+                "") break ;;
+            esac
+            printf "\033[%dA" "${#options[@]}"
+        done
+        printf "\033[?25h\n" # Restore cursor
+    else
+        # Fallback if no TTY is detected
+        echo "  1) Antigravity (.agy)"
+        echo "  2) Skip"
+        echo ""
+        read -p "  Select an option (1-2) [default: 1]: " choice || choice="1"
+        case "${choice:-1}" in
+            1) selected=0 ;;
+            2) selected=1 ;;
+            *) selected=1 ;;
         esac
-        printf "\033[%dA" "${#options[@]}"
-    done
-    printf "\033[?25h\n" # Restore cursor and new line
+    fi
     divider
+    
+    if [[ $selected -eq 0 ]]; then
+        SELECTED_PLUGINS="antigravity"
+    else
+        SELECTED_PLUGINS="none"
+    fi
+fi
     
     if [[ $selected -eq 0 ]]; then
         SELECTED_PLUGINS="antigravity"
