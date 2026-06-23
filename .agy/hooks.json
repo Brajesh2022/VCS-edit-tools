@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "bash -c 'bash \"$HOME/.gemini/config/plugins/vcs-edit/scripts/inject.sh\"'"
+        "command": "cat /data/data/com.termux/files/home/.gemini/config/plugins/vcs-edit/payload.json"
       }
     ]
   }
