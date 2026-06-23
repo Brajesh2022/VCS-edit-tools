@@ -1,28 +1,79 @@
 #!/usr/bin/env bash
+# VCS Edit CLI - Installer
+set -Eeuo pipefail
 
-set -e
+# ── Colors ────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  BOLD="\033[1m"
+  DIM="\033[2m"
+  GREEN="\033[32m"
+  RED="\033[31m"
+  CYAN="\033[36m"
+  RESET="\033[0m"
+else
+  BOLD="" DIM="" GREEN="" RED="" CYAN="" RESET=""
+fi
 
-# Default installation directories
+# ── Helpers ───────────────────────────────────────────────────────────────────
+info()    { printf '%b\n' " ${CYAN}[..]${RESET} ${DIM}$*${RESET}"; }
+ok()      { printf '%b\n' " ${GREEN}[OK]${RESET} $*"; }
+die()     {
+  printf "\033[?25h" >&2
+  printf '\n%b\n' " ${RED}[ERR]${RESET} ${1:-Installation failed.}" >&2
+  exit 1
+}
+warn()    { printf '%b\n' " ${RED}[!]${RESET} $*"; }
+divider() { printf '%b\n' "${DIM}────────────────────────────────────────${RESET}"; }
+
+spinner() {
+  local pid=$1
+  local msg=$2
+  local spinstr='\|/-'
+  printf "\033[?25l" # Hide cursor
+  while kill -0 "$pid" 2>/dev/null; do
+    local temp=${spinstr#?}
+    printf "\r\033[K %b[%c]%b %b%s%b" "$CYAN" "$spinstr" "$RESET" "$DIM" "$msg" "$RESET"
+    local spinstr=$temp${spinstr%"$temp"}
+    sleep 0.1
+  done
+  local exit_status=0
+  wait "$pid" || exit_status=$?
+  if [ $exit_status -eq 0 ]; then
+    printf "\r\033[K %b[OK]%b %s\n" "$GREEN" "$RESET" "$msg"
+  else
+    printf "\r\033[K %b[ERR]%b %s\n" "$RED" "$RESET" "$msg"
+  fi
+  printf "\033[?25h" # Show cursor
+  return $exit_status
+}
+
+# ── Header ────────────────────────────────────────────────────────────────────
+echo ""
+printf "  %bVCS Edit Tools%b\n" "${BOLD}${CYAN}" "${RESET}"
+printf "  %bUniversal Installer%b\n" "${DIM}" "${RESET}"
+echo ""
+divider
+
+# ── Initialization ────────────────────────────────────────────────────────────
 INSTALL_DIR="$HOME/.VCS-edit-tools"
 BIN_DIR="$HOME/.local/bin"
 
-# Detect OS
 OS="$(uname -s)"
 case "${OS}" in
     Linux*)     MACHINE=Linux;;
     Darwin*)    MACHINE=Mac;;
     CYGWIN*)    MACHINE=Cygwin;;
     MINGW*)     MACHINE=MinGw;;
-    *)          MACHINE="UNKNOWN:${OS}"
+    *)          MACHINE="UNKNOWN:${OS}";;
 esac
 
-# Termux environment check
 if [[ -n "${PREFIX:-}" && "${PREFIX:-}" == *"/usr"* && "${OS:-}" == "Linux" ]]; then
     BIN_DIR="${PREFIX}/bin"
-    echo "Detected Termux environment."
+    ok "Environment: Termux"
+else
+    ok "Environment: $MACHINE"
 fi
 
-# Parse arguments for non-interactive installation
 NON_INTERACTIVE=false
 SELECTED_PLUGINS=""
 
@@ -34,94 +85,83 @@ while [[ "$#" -gt 0 ]]; do
             shift
             ;;
         --install-plugins) 
-            # backward compatibility
             SELECTED_PLUGINS="antigravity"
             ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        *) die "Unknown parameter passed: $1" ;;
     esac
     shift
 done
 
-echo "Installing VCS Edit CLI..."
-
-# Check dependencies
+# ── Dependencies ──────────────────────────────────────────────────────────────
 deps_missing=false
 for cmd in git python3; do
-    if ! command -v $cmd &> /dev/null; then
-        echo "Error: $cmd is required but not installed."
+    if ! command -v "$cmd" >/dev/null 2>&1; then
         deps_missing=true
     fi
 done
 
 if [ "$deps_missing" = true ]; then
     if [ "$NON_INTERACTIVE" = true ]; then
-        echo "Non-interactive mode: please install the missing dependencies manually."
-        exit 1
+        die "Non-interactive mode: please install missing dependencies (git, python3)."
     fi
-    echo ""
-    read -p "Do you want to automatically install missing dependencies? (y/n) " -n 1 -r < /dev/tty
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if command -v pkg &> /dev/null; then
-            echo "Using pkg to install dependencies..."
-            pkg install -y git python
-        elif command -v apt &> /dev/null; then
-            echo "Using apt to install dependencies..."
-            sudo apt update && sudo apt install -y git python3
-        elif command -v brew &> /dev/null; then
-            echo "Using brew to install dependencies..."
-            brew install git python3
+    printf "\n"
+    info "Missing dependencies: git, python3"
+    read -p "  Install missing dependencies automatically? (y/n) " -n 1 -r choice </dev/tty || choice="n"
+    printf "\n"
+    if [[ "$choice" =~ ^[Yy]$ ]]; then
+        if command -v pkg >/dev/null 2>&1; then
+            pkg install -y git python >/dev/null 2>&1 &
+            spinner $! "Installing via pkg..." || die "Failed to install via pkg."
+        elif command -v apt >/dev/null 2>&1; then
+            (sudo apt update && sudo apt install -y git python3) >/dev/null 2>&1 &
+            spinner $! "Installing via apt..." || die "Failed to install via apt."
+        elif command -v brew >/dev/null 2>&1; then
+            brew install git python3 >/dev/null 2>&1 &
+            spinner $! "Installing via brew..." || die "Failed to install via brew."
         else
-            echo "Could not detect package manager. Please install git and python3 manually."
-            exit 1
+            die "Could not detect package manager. Install manually."
         fi
     else
-        echo "Cannot proceed without dependencies. Exiting."
-        exit 1
+        die "Dependencies required."
     fi
 fi
+ok "Dependencies met"
 
-# Clone or update repository
+# ── Clone / Update ────────────────────────────────────────────────────────────
 if [ -d "$INSTALL_DIR" ]; then
-    echo "Updating existing installation in $INSTALL_DIR..."
-    git -C "$INSTALL_DIR" pull --quiet origin main || git -C "$INSTALL_DIR" pull --quiet origin master
+    (git -C "$INSTALL_DIR" pull origin main || git -C "$INSTALL_DIR" pull origin master) >/dev/null 2>&1 &
+    spinner $! "Updating repository..." || die "Failed to update repo."
 else
-    echo "Cloning repository to $INSTALL_DIR..."
-    git clone --quiet https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR"
+    git clone https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR" >/dev/null 2>&1 &
+    spinner $! "Cloning repository..." || die "Failed to clone repo."
 fi
 
-# Setup bin directory
+# ── Install ───────────────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
-
-# Make the CLI executable and create symlink
 chmod +x "$INSTALL_DIR/vcs"
 
-# Fix shebang for Termux environment if applicable
-if command -v termux-fix-shebang &> /dev/null; then
+if command -v termux-fix-shebang >/dev/null 2>&1; then
     termux-fix-shebang "$INSTALL_DIR/vcs"
 fi
 
 ln -sf "$INSTALL_DIR/vcs" "$BIN_DIR/vcs"
+ok "CLI linked to $BIN_DIR/vcs"
 
-echo "VCS Edit CLI installed successfully to $BIN_DIR/vcs"
-
-# Check if BIN_DIR is in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo "Warning: $BIN_DIR is not in your PATH."
-    echo "Please add 'export PATH=\"\$PATH:$BIN_DIR\"' to your ~/.bashrc, ~/.zshrc, or equivalent."
+    warn "$BIN_DIR is not in PATH."
+    warn "Add export PATH=\"\$PATH:$BIN_DIR\" to your shell profile."
 fi
 
-# Plugin Installation
+# ── Plugins ───────────────────────────────────────────────────────────────────
 if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     echo ""
-    echo "=================================================="
-    echo "          AI Agent Plugins Installation           "
-    echo "=================================================="
-    echo "Which AI tool do you want to install plugins for?"
-    echo "1) Antigravity (.agy)"
-    echo "2) Skip plugin installation"
-    echo "=================================================="
-    read -p "Select an option (1-2) [default: 1]: " choice < /dev/tty
+    divider
+    printf "  %bAI Agent Plugins%b\n" "${BOLD}" "${RESET}"
+    echo "  1) Antigravity (.agy)"
+    echo "  2) Skip"
+    divider
+    read -p "  Select an option (1-2) [default: 1]: " choice </dev/tty || choice="1"
+    echo ""
     
     case "${choice:-1}" in
         1) SELECTED_PLUGINS="antigravity" ;;
@@ -131,16 +171,19 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
 fi
 
 if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
-    echo "Installing Antigravity plugin..."
     AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
     mkdir -p "$AGY_PLUGINS_DIR"
     if [ -d "$INSTALL_DIR/.agy" ]; then
         cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
-        echo "Antigravity plugin installed to $AGY_PLUGINS_DIR"
+        ok "Antigravity plugin installed"
     else
-        echo "Warning: Antigravity plugin source not found in $INSTALL_DIR/.agy"
+        warn "Antigravity plugin source not found in $INSTALL_DIR/.agy"
     fi
 fi
 
+# ── Complete ──────────────────────────────────────────────────────────────────
 echo ""
-echo "Installation complete! Try running 'vcs --help' (you may need to restart your terminal or source your profile first)."
+printf '%b\n' "${GREEN}${BOLD}Installation Complete.${RESET}"
+divider
+info "Try running: ${BOLD}vcs --help${RESET}"
+echo ""
