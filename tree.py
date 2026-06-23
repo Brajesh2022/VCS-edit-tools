@@ -408,7 +408,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="AGY directory tree generator — depth-limited, .gitignore-aware."
     )
-    parser.add_argument('path', help='Directory to tree')
+    parser.add_argument('path', nargs='?', default='.', help='Directory to tree')
     parser.add_argument('--depth', type=int, default=2,
                         help='Maximum depth (default: 2)')
     parser.add_argument('--all', action='store_true',
