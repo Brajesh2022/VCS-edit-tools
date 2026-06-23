@@ -17,8 +17,8 @@ case "${OS}" in
 esac
 
 # Termux environment check
-if [[ -n "$PREFIX" && "$PREFIX" == *"/usr"* && "$OS" == "Linux" ]]; then
-    BIN_DIR="$PREFIX/bin"
+if [[ -n "${PREFIX:-}" && "${PREFIX:-}" == *"/usr"* && "${OS:-}" == "Linux" ]]; then
+    BIN_DIR="${PREFIX}/bin"
     echo "Detected Termux environment."
 fi
 
@@ -97,10 +97,8 @@ mkdir -p "$BIN_DIR"
 chmod +x "$INSTALL_DIR/vcs"
 
 # Fix shebang for Termux environment if applicable
-if [[ -n "$PREFIX" && "$PREFIX" == *"/usr"* && "$OS" == "Linux" ]]; then
-    if command -v termux-fix-shebang &> /dev/null; then
-        termux-fix-shebang "$INSTALL_DIR/vcs"
-    fi
+if command -v termux-fix-shebang &> /dev/null; then
+    termux-fix-shebang "$INSTALL_DIR/vcs"
 fi
 
 ln -sf "$INSTALL_DIR/vcs" "$BIN_DIR/vcs"
