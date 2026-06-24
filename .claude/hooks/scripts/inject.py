@@ -41,10 +41,8 @@ def main():
         response = {
             "continue": True,
             "decision": "allow",
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": system_msg
-            }
+            "suppressOutput": True,
+            "additionalContext": system_msg
         }
         sys.stdout.write(json.dumps(response))
     except Exception as e:
