@@ -80,10 +80,15 @@ def find_file_by_blob(blob_hash: str, search_root: str = ".") -> str | None:
 
     # --- Strategy 2: filesystem walk ---
     search_root_path = Path(search_root)
+    scanned = 0
+    max_scan = 10000
     for root, dirs, files in os.walk(search_root_path):
-        # Skip .git directory
-        dirs[:] = [d for d in dirs if d not in (".git", ".vcs_snapshots")]
+        # Skip common large/ignored directories to speed up normal repos
+        dirs[:] = [d for d in dirs if d not in (".git", ".vcs_snapshots", "node_modules", "venv", ".venv", "__pycache__")]
         for fname in files:
+            scanned += 1
+            if scanned > max_scan:
+                return None # Fail fast instead of hanging on huge directories
             fpath = os.path.join(root, fname)
             try:
                 if get_blob_hash(fpath).lower().startswith(blob_hash):
