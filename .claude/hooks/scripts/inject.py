@@ -32,9 +32,6 @@ def main():
         # Add a strong system directive prefix
         system_msg = f"*** CRITICAL SYSTEM INSTRUCTION ***\n{msg}\n*************************************"
         
-        if original_prompt:
-            new_prompt = f"{system_msg}\n\nUser Prompt: {original_prompt}"
-        else:
         # Write the response for the UserPromptSubmit hook
         response = {
             "decision": "allow",
