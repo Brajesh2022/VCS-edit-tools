@@ -262,7 +262,38 @@ if [[ "$SELECTED_PLUGINS" == *"claude"* || "$SELECTED_PLUGINS" == *"all"* ]]; th
     mkdir -p "$CLAUDE_PLUGINS_DIR"
     if [ -d "$INSTALL_DIR/.claude" ]; then
         cp -r "$INSTALL_DIR/.claude/"* "$CLAUDE_PLUGINS_DIR/"
-        ok "Claude plugin installed"
+        
+        # Configure UserPromptSubmit hook globally
+        python3 -c "
+import json, os
+settings_path = os.path.expanduser('~/.claude/settings.json')
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+try:
+    with open(settings_path, 'r') as f:
+        settings = json.load(f)
+except:
+    settings = {}
+
+hook = {
+    'matcher': '*',
+    'hooks': [
+        {
+            'type': 'command',
+            'command': 'python3 ' + os.path.expanduser('~/.claude/plugins/vcs-edit/hooks/scripts/inject.py')
+        }
+    ]
+}
+
+if 'UserPromptSubmit' not in settings:
+    settings['UserPromptSubmit'] = []
+
+settings['UserPromptSubmit'] = [h for h in settings['UserPromptSubmit'] if 'vcs-edit' not in str(h)]
+settings['UserPromptSubmit'].append(hook)
+
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+"
+        ok "Claude plugin installed and globally configured"
     else
         warn "Claude plugin source not found in $INSTALL_DIR/.claude"
     fi
