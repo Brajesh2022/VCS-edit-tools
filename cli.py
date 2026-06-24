@@ -115,19 +115,73 @@ def _short_blob(h: str) -> str:
 # ---------------------------------------------------------------------------
 # Command: read
 # ---------------------------------------------------------------------------
+def _find_symbol_range(filepath: str, symbol_name: str) -> tuple[int, int]:
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+        
+    if filepath.endswith('.py'):
+        import ast
+        try:
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if hasattr(node, 'name') and node.name == symbol_name:
+                    return getattr(node, 'lineno', 1), getattr(node, 'end_lineno', len(content.splitlines()))
+        except Exception:
+            pass
+            
+    import re
+    lines = content.splitlines()
+    pattern = re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+{symbol_name}\b")
+    start_line = None
+    for i, line in enumerate(lines):
+        if pattern.search(line) or (f"{symbol_name}(" in line and "{" in line) or (f"{symbol_name} = " in line and "=>" in line):
+            start_line = i
+            break
+            
+    if start_line is None:
+        raise ValueError(f"symbol '{symbol_name}' not found")
+        
+    open_braces = 0
+    found_brace = False
+    for i in range(start_line, len(lines)):
+        line = lines[i]
+        for char in line:
+            if char == '{':
+                open_braces += 1
+                found_brace = True
+            elif char == '}':
+                open_braces -= 1
+        if found_brace and open_braces <= 0:
+            return start_line + 1, i + 1
+            
+    return start_line + 1, start_line + 20
+
 
 def cmd_read(args: list[str]) -> None:
-    """vcs read <filepath> [start-end]"""
+    """vcs read <filepath> [start-end] [--symbol <name>]"""
     if not args:
-        _error("usage: vcs read <filepath> [start-end]")
+        _error("usage: vcs read <filepath> [start-end] [--symbol <name>]")
+
+    symbol = None
+    if "--symbol" in args:
+        idx = args.index("--symbol")
+        symbol = args[idx + 1]
+        args.pop(idx)
+        args.pop(idx)
 
     filepath = args[0]
     range_str = args[1] if len(args) > 1 else None
 
-    try:
-        start, end = _parse_range_arg(range_str)
-    except ValueError:
-        _error(f"invalid line range: '{range_str}'. Expected START-END (e.g. 801-1200).")
+    if symbol:
+        try:
+            start, end = _find_symbol_range(filepath, symbol)
+        except Exception as e:
+            _error(str(e))
+    else:
+        try:
+            start, end = _parse_range_arg(range_str)
+        except ValueError:
+            _error(f"invalid line range: '{range_str}'. Expected START-END (e.g. 801-1200).")
 
     try:
         result = read_file(filepath, start=start or 1, end=end)
@@ -301,10 +355,48 @@ def cmd_delete(args: list[str]) -> None:
 def cmd_batch(args: list[str]) -> None:
     """vcs batch << 'EOF' [...json...] EOF"""
     raw = _read_stdin()
-    try:
-        edits = json.loads(raw)
-    except json.JSONDecodeError as e:
-        _error(f"invalid JSON: {e}")
+    def _parse_batch_input(raw: str) -> list[dict]:
+        raw_stripped = raw.strip()
+        if raw_stripped.startswith('['):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as e:
+                _error(f"invalid JSON: {e}")
+                
+        edits = []
+        current_edit = None
+        content_lines = []
+        
+        for line in raw.splitlines(keepends=True):
+            if line.startswith("=== ") and " ===" in line:
+                if current_edit:
+                    current_edit["content"] = "".join(content_lines)
+                    edits.append(current_edit)
+                    
+                parts = line.strip().split(" ")
+                if len(parts) >= 5:
+                    op = parts[1].lower()
+                    target = parts[2]
+                    rng = parts[3]
+                    current_edit = {"type": op, "target": target}
+                    if op in ("replace", "delete"):
+                        current_edit["line_range"] = rng
+                    elif op == "insert":
+                        current_edit["line_str"] = rng
+                    content_lines = []
+                else:
+                    content_lines.append(line)
+            else:
+                if current_edit:
+                    content_lines.append(line)
+                    
+        if current_edit:
+            current_edit["content"] = "".join(content_lines)
+            edits.append(current_edit)
+            
+        return edits
+
+    edits = _parse_batch_input(raw)
 
     if not isinstance(edits, list):
         _error("expected a JSON array of edit objects")
