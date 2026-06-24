@@ -4,7 +4,16 @@ import os
 import sys
 
 def main():
-    plugin_root = os.environ.get('CLAUDE_PLUGIN_ROOT', '')
+    # Consume stdin if provided by Claude hook system
+    if not sys.stdin.isatty():
+        try:
+            _ = sys.stdin.read()
+        except:
+            pass
+
+    # Resolve payload.json path
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    plugin_root = os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.dirname(os.path.dirname(script_dir)))
     payload_path = os.path.join(plugin_root, 'payload.json')
     
     try:
