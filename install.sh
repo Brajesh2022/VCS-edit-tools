@@ -284,11 +284,13 @@ hook = {
     ]
 }
 
-if 'UserPromptSubmit' not in settings:
-    settings['UserPromptSubmit'] = []
+if 'hooks' not in settings:
+    settings['hooks'] = {}
+if 'UserPromptSubmit' not in settings['hooks']:
+    settings['hooks']['UserPromptSubmit'] = []
 
-settings['UserPromptSubmit'] = [h for h in settings['UserPromptSubmit'] if 'vcs-edit' not in str(h)]
-settings['UserPromptSubmit'].append(hook)
+settings['hooks']['UserPromptSubmit'] = [h for h in settings['hooks']['UserPromptSubmit'] if 'vcs-edit' not in str(h)]
+settings['hooks']['UserPromptSubmit'].append(hook)
 
 with open(settings_path, 'w') as f:
     json.dump(settings, f, indent=2)

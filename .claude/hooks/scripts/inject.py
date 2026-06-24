@@ -25,7 +25,7 @@ def main():
         # Write the response for the UserPromptSubmit hook
         response = {
             "continue": True,
-            "suppressOutput": True,
+            "suppressOutput": False,
             "systemMessage": msg
         }
     except Exception as e:
