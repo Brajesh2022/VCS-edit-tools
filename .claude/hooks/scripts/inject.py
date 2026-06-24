@@ -35,15 +35,15 @@ def main():
         if original_prompt:
             new_prompt = f"{system_msg}\n\nUser Prompt: {original_prompt}"
         else:
-            new_prompt = system_msg
-
         # Write the response for the UserPromptSubmit hook
         response = {
-            "continue": True,
             "decision": "allow",
-            "suppressOutput": True,
             "additionalContext": system_msg
         }
+        sys.stdout.write(json.dumps(response))
+    except Exception as e:
+        sys.stderr.write(str(e))
+        sys.exit(2)
         sys.stdout.write(json.dumps(response))
     except Exception as e:
         sys.stderr.write(str(e))
