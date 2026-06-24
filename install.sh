@@ -257,6 +257,17 @@ if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]
     fi
 fi
 
+if [[ "$SELECTED_PLUGINS" == *"claude"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
+    CLAUDE_PLUGINS_DIR="$HOME/.claude/plugins/vcs-edit"
+    mkdir -p "$CLAUDE_PLUGINS_DIR"
+    if [ -d "$INSTALL_DIR/.claude" ]; then
+        cp -r "$INSTALL_DIR/.claude/"* "$CLAUDE_PLUGINS_DIR/"
+        ok "Claude plugin installed"
+    else
+        warn "Claude plugin source not found in $INSTALL_DIR/.claude"
+    fi
+fi
+
 # ── Complete ──────────────────────────────────────────────────────────────────
 echo ""
 printf '%b\n' "${GREEN}${BOLD}Installation Complete.${RESET}"
