@@ -40,10 +40,9 @@ def main():
         # Write the response for the UserPromptSubmit hook
         response = {
             "continue": True,
-            "suppressOutput": True,
-            "systemMessage": system_msg,
+            "decision": "allow",
             "hookSpecificOutput": {
-                "transformedPrompt": new_prompt,
+                "hookEventName": "UserPromptSubmit",
                 "additionalContext": system_msg
             }
         }
