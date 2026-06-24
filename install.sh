@@ -129,7 +129,7 @@ ok "Dependencies met"
 
 # ── Clone / Update ────────────────────────────────────────────────────────────
 if [ -d "$INSTALL_DIR" ]; then
-    (git -C "$INSTALL_DIR" pull origin main || git -C "$INSTALL_DIR" pull origin master) >/dev/null 2>&1 &
+    (git -C "$INSTALL_DIR" fetch origin main && git -C "$INSTALL_DIR" reset --hard origin/main || git -C "$INSTALL_DIR" pull origin master) >/dev/null 2>&1 &
     spinner $! "Updating repository..." || die "Failed to update repo."
 else
     git clone https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR" >/dev/null 2>&1 &
