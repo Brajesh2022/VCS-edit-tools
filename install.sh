@@ -191,10 +191,6 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
             key=""
             if ! IFS= read -rsn1 key; then
                 break
-            fi
-            
-            case "$key" in
-                $'\x1b')
                     k1=""
                     k2=""
                     IFS= read -rsn1 -t 0.1 k1 || true
