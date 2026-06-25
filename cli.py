@@ -6,11 +6,13 @@ and 3-way merge conflict resolution.
 
 Commands:
     vcs read <filepath> [start-end]
-    vcs replace <target> <start-end> << 'EOF' ... EOF
-    vcs insert <target> <line> << 'EOF' ... EOF
-    vcs delete <target> <start-end>
+    vcs replace <filepath> <blob> <start-end> << 'EOF' ... EOF
+    vcs insert <filepath> <blob> <line> << 'EOF' ... EOF
+    vcs delete <filepath> <blob> <start-end>          (delete line range)
+    vcs delete <filepath>                              (delete file or directory)
+    vcs create <filepath> << 'EOF' ... EOF             (create new file with content)
     vcs batch << 'EOF' [...json...] EOF
-    vcs diff <target>
+    vcs diff <filepath> <blob>
     vcs skeleton <filepath> [start-end]
     vcs tree [path] [--depth N] [--all]
     vcs grep <query> [path] [-i] [-r]
@@ -29,6 +31,7 @@ import difflib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,17 +70,61 @@ def _error(message: str, code: int = 2) -> None:
     sys.exit(code)
 
 
-def _resolve_target(target: str) -> str:
-    """If target is an existing filepath, snapshot it and return its blob hash.
-    Otherwise assume it's a blob hash and return it.
+def _looks_like_blob(s: str) -> bool:
+    """Heuristic: hex string of >=6 chars looks like a blob hash."""
+    if not s or len(s) < 6:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_target(filepath: str, blob: Optional[str] = None) -> str:
+    """Resolve and validate the (filepath, blob) pair.
+
+    New contract (per v2 spec): BOTH filepath AND blob are required for edits.
+    The blob proves the agent read the file; the filepath confirms which file.
+
+    Args:
+        filepath: path to the file (must exist for edits)
+        blob:     short or full blob hash the agent received from `vcs read`
+
+    Returns:
+        The CLAIMED blob hash (the agent's blob, normalized to a full hash if
+        possible). This is what gets passed to do_replace() so the conflict
+        detection can compare claimed-blob vs current-blob.
+
+    Raises:
+        FileNotFoundError: filepath doesn't exist
+        ValueError:        blob doesn't match the file's current content
     """
-    if os.path.exists(target):
-        blob = get_blob_hash(target)
-        register(blob, target)
-        with open(target, "r", encoding="utf-8", errors="replace", newline="") as fh:
-            save_snapshot(blob, fh.read())
-        return blob
-    return target
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"file not found: {filepath}")
+
+    current_blob = get_blob_hash(filepath)
+
+    # Register the agent's CLAIMED blob → filepath so resolve_path can find the file.
+    # If blob is None (e.g. skeleton command), use the current blob.
+    claimed_blob = blob if blob else current_blob
+
+    # Always register the claimed blob so the replace logic can resolve the filepath
+    register(claimed_blob.lower(), filepath)
+
+    # If the agent's blob matches the current file content, save the snapshot
+    # (this is the "clean read" case — no conflict will occur).
+    # If they don't match, the snapshot for the claimed blob should already
+    # exist from the prior `vcs read` call. We deliberately DO NOT overwrite it.
+    if current_blob.lower() == claimed_blob.lower() or current_blob.lower().startswith(claimed_blob.lower()):
+        with open(filepath, "r", encoding="utf-8", errors="replace", newline="") as fh:
+            save_snapshot(current_blob, fh.read())
+        return current_blob
+
+    # Mismatch case: file has been modified since the agent read it.
+    # The snapshot for the claimed blob is what `vcs read` saved earlier.
+    # We pass the claimed blob to do_replace() so it can detect the conflict.
+    return claimed_blob
 
 
 def _parse_range_arg(range_str: str | None) -> tuple[int | None, int | None]:
@@ -118,7 +165,7 @@ def _short_blob(h: str) -> str:
 def _find_symbol_range(filepath: str, symbol_name: str) -> tuple[int, int]:
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
-        
+
     if filepath.endswith('.py'):
         import ast
         try:
@@ -128,7 +175,7 @@ def _find_symbol_range(filepath: str, symbol_name: str) -> tuple[int, int]:
                     return getattr(node, 'lineno', 1), getattr(node, 'end_lineno', len(content.splitlines()))
         except Exception:
             pass
-            
+
     import re
     lines = content.splitlines()
     pattern = re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+{symbol_name}\b")
@@ -137,10 +184,10 @@ def _find_symbol_range(filepath: str, symbol_name: str) -> tuple[int, int]:
         if pattern.search(line) or (f"{symbol_name}(" in line and "{" in line) or (f"{symbol_name} = " in line and "=>" in line):
             start_line = i
             break
-            
+
     if start_line is None:
         raise ValueError(f"symbol '{symbol_name}' not found")
-        
+
     open_braces = 0
     found_brace = False
     for i in range(start_line, len(lines)):
@@ -153,7 +200,7 @@ def _find_symbol_range(filepath: str, symbol_name: str) -> tuple[int, int]:
                 open_braces -= 1
         if found_brace and open_braces <= 0:
             return start_line + 1, i + 1
-            
+
     return start_line + 1, start_line + 20
 
 
@@ -236,26 +283,31 @@ def cmd_read(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: replace
+# Command: replace  (requires BOTH filepath AND blob)
 # ---------------------------------------------------------------------------
 
 def cmd_replace(args: list[str]) -> None:
-    """vcs replace <target> <start-end> << 'EOF' ... EOF"""
-    if len(args) < 2:
-        _error("usage: vcs replace <target> <start-end> << 'EOF'\\nnew content\\nEOF")
+    """vcs replace <filepath> <blob> <start-end> << 'EOF' ... EOF"""
+    if len(args) < 3:
+        _error("usage: vcs replace <filepath> <blob> <start-end> << 'EOF'\\nnew content\\nEOF")
 
-    target = args[0]
-    line_range = args[1]
+    filepath = args[0]
+    blob = args[1]
+    line_range = args[2]
     content = _read_stdin()
 
     if content and not content.endswith('\n'):
         content += '\n'
 
-    blob_hash = _resolve_target(target)
+    try:
+        blob_hash = _resolve_target(filepath, blob)
+    except (FileNotFoundError, ValueError) as e:
+        _error(str(e))
+
     tmp_path = _write_temp(content)
 
     try:
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
+        search_root = os.path.dirname(os.path.abspath(filepath))
         result = do_replace(blob_hash, line_range, tmp_path, search_root=search_root)
     except LookupError as e:
         _error(str(e))
@@ -273,16 +325,17 @@ def cmd_replace(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: insert
+# Command: insert  (requires BOTH filepath AND blob)
 # ---------------------------------------------------------------------------
 
 def cmd_insert(args: list[str]) -> None:
-    """vcs insert <target> <line> << 'EOF' ... EOF"""
-    if len(args) < 2:
-        _error("usage: vcs insert <target> <line> << 'EOF'\\ncontent\\nEOF")
+    """vcs insert <filepath> <blob> <line> << 'EOF' ... EOF"""
+    if len(args) < 3:
+        _error("usage: vcs insert <filepath> <blob> <line> << 'EOF'\\ncontent\\nEOF")
 
-    target = args[0]
-    line_str = args[1]
+    filepath = args[0]
+    blob = args[1]
+    line_str = args[2]
 
     try:
         line_no = int(line_str)
@@ -297,11 +350,15 @@ def cmd_insert(args: list[str]) -> None:
     if content and not content.endswith('\n'):
         content += '\n'
 
-    blob_hash = _resolve_target(target)
+    try:
+        blob_hash = _resolve_target(filepath, blob)
+    except (FileNotFoundError, ValueError) as e:
+        _error(str(e))
+
     tmp_path = _write_temp(content)
 
     try:
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
+        search_root = os.path.dirname(os.path.abspath(filepath))
         # Insert = replace with zero-width range (line_no to line_no-1)
         result = do_replace(blob_hash, f"{line_no}-{line_no - 1}", tmp_path, search_root=search_root)
     except LookupError as e:
@@ -320,21 +377,37 @@ def cmd_insert(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: delete
+# Command: delete  (dispatch: line-range vs file/dir)
 # ---------------------------------------------------------------------------
 
 def cmd_delete(args: list[str]) -> None:
-    """vcs delete <target> <start-end>"""
-    if len(args) < 2:
-        _error("usage: vcs delete <target> <start-end>")
+    """vcs delete <filepath> <blob> <start-end>   (delete line range)
+       vcs delete <filepath>                       (delete file or directory)
+    """
+    if not args:
+        _error("usage: vcs delete <filepath> [<blob> <start-end>]")
 
-    target = args[0]
-    line_range = args[1]
+    filepath = args[0]
 
-    blob_hash = _resolve_target(target)
+    # ── Dispatch: 3 args = line-range delete; 1 arg = file/dir delete ──
+    if len(args) == 1:
+        _delete_path(filepath)
+        return
+
+    if len(args) < 3:
+        _error("usage: vcs delete <filepath> <blob> <start-end>   (line-range mode)\n"
+               "       vcs delete <filepath>                       (file/dir mode)")
+
+    blob = args[1]
+    line_range = args[2]
 
     try:
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
+        blob_hash = _resolve_target(filepath, blob)
+    except (FileNotFoundError, ValueError) as e:
+        _error(str(e))
+
+    try:
+        search_root = os.path.dirname(os.path.abspath(filepath))
         result = do_replace(blob_hash, line_range, os.devnull, search_root=search_root)
     except LookupError as e:
         _error(str(e))
@@ -348,13 +421,89 @@ def cmd_delete(args: list[str]) -> None:
     _print_edit_result(result)
 
 
+def _delete_path(filepath: str) -> None:
+    """Delete a file or an entire directory tree."""
+    if not os.path.exists(filepath):
+        _error(f"path not found: {filepath}")
+
+    try:
+        if os.path.isdir(filepath) and not os.path.islink(filepath):
+            shutil.rmtree(filepath)
+        else:
+            os.remove(filepath)
+    except OSError as e:
+        _error(f"failed to delete '{filepath}': {e}")
+
+    # Clean output: just `status: ok`
+    print("status: ok")
+    sys.exit(0)
+
+
 # ---------------------------------------------------------------------------
-# Command: batch
+# Command: create  (new — create a file with content)
+# ---------------------------------------------------------------------------
+
+def cmd_create(args: list[str]) -> None:
+    """vcs create <filepath> << 'EOF' ... EOF"""
+    if not args:
+        _error("usage: vcs create <filepath> << 'EOF'\\ncontent\\nEOF")
+
+    filepath = args[0]
+    content = _read_stdin()
+
+    # Don't silently overwrite an existing file
+    if os.path.exists(filepath):
+        _error(f"file already exists: {filepath} (use `vcs replace` to edit)")
+
+    # Create parent directories if needed
+    parent = os.path.dirname(os.path.abspath(filepath))
+    os.makedirs(parent, exist_ok=True)
+
+    if content and not content.endswith('\n'):
+        content += '\n'
+
+    try:
+        # Atomic write: temp file in same dir, then rename
+        fd, tmp_path = tempfile.mkstemp(
+            dir=parent or ".",
+            prefix=".vcs_create_",
+        )
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(content)
+        os.replace(tmp_path, filepath)
+    except OSError as e:
+        # Cleanup temp file on failure
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        _error(f"failed to create '{filepath}': {e}")
+
+    # Register the new file's blob so the agent can immediately edit it
+    try:
+        blob_hash = get_blob_hash(filepath)
+        register(blob_hash, filepath)
+        save_snapshot(blob_hash, content)
+    except Exception:
+        pass
+
+    # Clean output: just `status: ok`
+    print("status: ok")
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Command: batch  (BOTH filepath AND blob required per edit)
 # ---------------------------------------------------------------------------
 
 def cmd_batch(args: list[str]) -> None:
-    """vcs batch << 'EOF' [...json...] EOF"""
+    """vcs batch << 'EOF' [...json...] EOF
+
+    Each edit MUST include BOTH `filepath` AND `blob`. Missing either → rejected.
+    """
     raw = _read_stdin()
+
     def _parse_batch_input(raw: str) -> list[dict]:
         raw_stripped = raw.strip()
         if raw_stripped.startswith('['):
@@ -362,23 +511,30 @@ def cmd_batch(args: list[str]) -> None:
                 return json.loads(raw)
             except json.JSONDecodeError as e:
                 _error(f"invalid JSON: {e}")
-                
+
         edits = []
         current_edit = None
         content_lines = []
-        
+
         for line in raw.splitlines(keepends=True):
             if line.startswith("=== ") and " ===" in line:
                 if current_edit:
                     current_edit["content"] = "".join(content_lines)
                     edits.append(current_edit)
-                    
+
                 parts = line.strip().split(" ")
-                if len(parts) >= 5:
+                # Format: === <OP> <filepath> <blob> <range> ===
+                # OR legacy: === <OP> <target> <range> === (will be rejected below)
+                if len(parts) >= 6:
                     op = parts[1].lower()
-                    target = parts[2]
-                    rng = parts[3]
-                    current_edit = {"type": op, "target": target}
+                    filepath = parts[2]
+                    blob = parts[3]
+                    rng = parts[4]
+                    current_edit = {
+                        "type": op,
+                        "filepath": filepath,
+                        "blob": blob,
+                    }
                     if op in ("replace", "delete"):
                         current_edit["line_range"] = rng
                     elif op == "insert":
@@ -389,11 +545,11 @@ def cmd_batch(args: list[str]) -> None:
             else:
                 if current_edit:
                     content_lines.append(line)
-                    
+
         if current_edit:
             current_edit["content"] = "".join(content_lines)
             edits.append(current_edit)
-            
+
         return edits
 
     edits = _parse_batch_input(raw)
@@ -401,23 +557,47 @@ def cmd_batch(args: list[str]) -> None:
     if not isinstance(edits, list):
         _error("expected a JSON array of edit objects")
 
+    # Empty input or input that parsed to zero edits is an error (likely bad input)
+    if not edits:
+        _error("no edits parsed from input — expected JSON array or `=== OP filepath blob range ===` blocks")
+
+    # Validate: every edit must have BOTH filepath AND blob
+    for i, edit in enumerate(edits):
+        # Backward-compat: accept `target` and copy to filepath if no filepath
+        if "filepath" not in edit and "target" in edit:
+            edit["filepath"] = edit["target"]
+        if "blob" not in edit:
+            print(f"  [{i}] REJECTED: missing blob (batch requires both filepath AND blob)")
+            sys.exit(2)
+        if not edit.get("filepath"):
+            print(f"  [{i}] REJECTED: missing filepath (batch requires both filepath AND blob)")
+            sys.exit(2)
+
     results = []
     for i, edit in enumerate(edits):
         try:
-            target = edit.get("target")
+            filepath = edit.get("filepath")
+            blob = edit.get("blob")
             edit_type = edit.get("type")
-            if not target or not edit_type:
-                results.append({"edit_index": i, "status": "error", "message": "missing target or type"})
+            if not filepath or not edit_type or not blob:
+                results.append({"edit_index": i, "status": "error",
+                                "message": "missing filepath, blob, or type"})
                 continue
 
-            blob_hash = _resolve_target(target)
-            search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
+            try:
+                blob_hash = _resolve_target(filepath, blob)
+            except (FileNotFoundError, ValueError) as e:
+                results.append({"edit_index": i, "status": "error", "message": str(e)})
+                continue
+
+            search_root = os.path.dirname(os.path.abspath(filepath))
 
             if edit_type == "replace":
                 content = edit.get("content", "")
                 line_range = edit.get("line_range")
                 if not line_range:
-                    results.append({"edit_index": i, "status": "error", "message": "missing line_range for replace"})
+                    results.append({"edit_index": i, "status": "error",
+                                    "message": "missing line_range for replace"})
                     continue
                 if content and not content.endswith('\n'):
                     content += '\n'
@@ -434,7 +614,8 @@ def cmd_batch(args: list[str]) -> None:
                 line_str = edit.get("line_str")
                 content = edit.get("content", "")
                 if not line_str:
-                    results.append({"edit_index": i, "status": "error", "message": "missing line_str for insert"})
+                    results.append({"edit_index": i, "status": "error",
+                                    "message": "missing line_str for insert"})
                     continue
                 line_no = int(line_str)
                 if content and not content.endswith('\n'):
@@ -451,19 +632,21 @@ def cmd_batch(args: list[str]) -> None:
             elif edit_type == "delete":
                 line_range = edit.get("line_range")
                 if not line_range:
-                    results.append({"edit_index": i, "status": "error", "message": "missing line_range for delete"})
+                    results.append({"edit_index": i, "status": "error",
+                                    "message": "missing line_range for delete"})
                     continue
                 res = do_replace(blob_hash, line_range, os.devnull, search_root=search_root)
                 res["edit_index"] = i
                 results.append(res)
 
             else:
-                results.append({"edit_index": i, "status": "error", "message": f"unknown type: {edit_type}"})
+                results.append({"edit_index": i, "status": "error",
+                                "message": f"unknown type: {edit_type}"})
 
         except Exception as e:
             results.append({"edit_index": i, "status": "error", "message": str(e)})
 
-    # Print results
+    # Print results — minimal output per spec
     ok_count = sum(1 for r in results if r.get("status") in ("ok", "auto_merged"))
     err_count = sum(1 for r in results if r.get("status") == "error")
     conflict_count = sum(1 for r in results if r.get("status") == "conflict")
@@ -472,11 +655,12 @@ def cmd_batch(args: list[str]) -> None:
         idx = r.get("edit_index", "?")
         status = r.get("status", "unknown")
         if status in ("ok", "auto_merged"):
-            print(f"  [{idx}] {status}")
+            print(f"  [{idx}] ok")
         elif status == "conflict":
-            print(f"  [{idx}] CONFLICT: {r.get('conflicting_lines', '?')}")
+            # Simple conflict message per spec — no diff dump
+            print(f"  [{idx}] Merge conflict detected. Please read the latest version and try again.")
         else:
-            print(f"  [{idx}] ERROR: {r.get('message', '?')}")
+            print(f"  [{idx}] error: {r.get('message', '?')}")
 
     print(f"---")
     print(f"batch: {ok_count} ok, {conflict_count} conflict, {err_count} error ({len(edits)} total)")
@@ -492,23 +676,20 @@ def cmd_batch(args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_diff(args: list[str]) -> None:
-    """vcs diff <target>"""
-    if not args:
-        _error("usage: vcs diff <target>")
+    """vcs diff <filepath> <blob>"""
+    if len(args) < 2:
+        _error("usage: vcs diff <filepath> <blob>")
 
-    target = args[0]
-    blob_hash = _resolve_target(target)
-    filepath = resolve_path(blob_hash)
-
-    if filepath is None:
-        _error(f"blob hash '{blob_hash[:8]}' not found in registry or repo")
-
-    base = load_snapshot(blob_hash)
-    if base is None:
-        _error(f"no snapshot found for blob '{blob_hash[:8]}'. Did you `vcs read` first?")
+    filepath = args[0]
+    blob = args[1]
 
     if not os.path.exists(filepath):
         _error(f"file not found: {filepath}")
+
+    # Look up the snapshot by blob
+    base = load_snapshot(blob)
+    if base is None:
+        _error(f"no snapshot found for blob '{_short_blob(blob)}'. Did you `vcs read` first?")
 
     with open(filepath, "r", encoding="utf-8", errors="replace", newline="") as fh:
         current = fh.read()
@@ -516,7 +697,6 @@ def cmd_diff(args: list[str]) -> None:
     base_lines = base.splitlines(keepends=True)
     current_lines = current.splitlines(keepends=True)
 
-    # Show diff with line numbers embedded
     base_numbered = [f"{i + 1}: {line}" for i, line in enumerate(base_lines)]
     current_numbered = [f"{i + 1}: {line}" for i, line in enumerate(current_lines)]
 
@@ -524,17 +704,17 @@ def cmd_diff(args: list[str]) -> None:
         difflib.unified_diff(
             base_numbered,
             current_numbered,
-            fromfile=f"blob:{_short_blob(blob_hash)}",
+            fromfile=f"blob:{_short_blob(blob)}",
             tofile=str(filepath),
         )
     )
 
     if not diff_text:
-        print(f"blob: {_short_blob(blob_hash)}")
+        print(f"blob: {_short_blob(blob)}")
         print(f"path: {filepath}")
         print("no changes")
     else:
-        print(f"blob: {_short_blob(blob_hash)}")
+        print(f"blob: {_short_blob(blob)}")
         print(f"path: {filepath}")
         print("---")
         print(diff_text, end="")
@@ -577,7 +757,10 @@ def cmd_skeleton(args: list[str]) -> None:
         _error(f"skeleton failed: {e.stderr.strip() if e.stderr else 'unknown error'}")
 
     # Also register the blob so the user can edit
-    blob_hash = _resolve_target(filepath)
+    try:
+        blob_hash = _resolve_target(filepath)
+    except (FileNotFoundError, ValueError) as e:
+        _error(str(e))
 
     start = 1
     try:
@@ -651,7 +834,6 @@ def cmd_grep(args: list[str]) -> None:
         pass
 
     # Fallback to standard grep
-    # Parse args manually to extract query and flags
     query = args[0]
     path = args[1] if len(args) > 1 and not args[1].startswith("-") else "."
     flags = [a for a in args[1:] if a.startswith("-")]
@@ -748,58 +930,34 @@ def cmd_status(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Edit result printer (shared by replace/insert/delete)
+# Edit result printer — clean per v2 spec
 # ---------------------------------------------------------------------------
 
 def _print_edit_result(result: dict) -> None:
-    """Print a human-readable edit result."""
+    """Print a human-readable edit result.
+
+    Per v2 spec:
+      - success (ok or auto_merged) → just `status: ok`
+      - conflict → simple human message: "Merge conflict detected. Please read
+        the latest version and try again."
+      - error → status: error + message
+    """
     status = result.get("status", "unknown")
 
     if status in ("ok", "auto_merged"):
-        print(f"status: {status}")
-        if status == "auto_merged":
-            regions = result.get("merged_regions", [])
-            if regions:
-                print(f"merged_regions: {len(regions)}")
-                for r in regions:
-                    print(f"  lines {r.get('start', '?')}-{r.get('end', '?')}")
+        # Clean output: just `status: ok`
+        print("status: ok")
         sys.exit(0)
 
     elif status == "conflict":
-        print(f"status: CONFLICT")
-        print(f"conflicting_lines: {result.get('conflicting_lines', '?')}")
-        if result.get("message"):
-            print(f"message: {result['message']}")
-        if result.get("diff"):
-            print("---")
-            print(result["diff"], end="")
-        if result.get("base_content"):
-            print("--- base ---")
-            _print_numbered(result["base_content"])
-        if result.get("their_change"):
-            print("--- theirs (current on disk) ---")
-            _print_numbered(result["their_change"])
-        if result.get("your_change"):
-            print("--- yours (your edit) ---")
-            _print_numbered(result["your_change"])
+        # Simple conflict message — no diff, no conflicting lines, no technical details
+        print("Merge conflict detected. Please read the latest version and try again.")
         sys.exit(1)
 
     else:
         print(f"status: error")
         print(f"message: {result.get('message', 'unknown error')}")
         sys.exit(2)
-
-
-def _print_numbered(content: str) -> None:
-    """Print content with line numbers if not already numbered."""
-    lines = content.splitlines(keepends=True)
-    for i, line in enumerate(lines, 1):
-        # Check if already numbered (pattern: "N: ")
-        stripped = line.lstrip()
-        if stripped and stripped[0].isdigit() and ": " in stripped[:10]:
-            print(line, end="")
-        else:
-            print(f"{i}: {line}", end="")
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +969,7 @@ COMMANDS = {
     "replace": cmd_replace,
     "insert": cmd_insert,
     "delete": cmd_delete,
+    "create": cmd_create,
     "batch": cmd_batch,
     "diff": cmd_diff,
     "skeleton": cmd_skeleton,
@@ -825,24 +984,28 @@ USAGE = """\
 usage: vcs <command> [args...]
 
 commands:
-  read      <filepath> [start-end]           Read file with line numbers + blob hash
-  replace   <target> <start-end> <<'EOF'     Replace line range (stdin = new content)
-  insert    <target> <line> <<'EOF'          Insert before line (stdin = content)
-  delete    <target> <start-end>             Delete line range
-  batch     <<'EOF'                          Batch edits from JSON array on stdin
-  diff      <target>                         Unified diff: blob snapshot vs disk
-  skeleton  <filepath> [start-end]           Collapsed structure view
-  tree      [path] [--depth N] [--all]       Directory tree (.gitignore aware)
-  grep      <query> [path] [-i] [-r]         Search with function/class context
-  fmt       [--check] [path]                 Auto-format staged files
-  test      <command> [args...]              Run tests, show failures only
-  status                                     List all blob→filepath mappings
+  read      <filepath> [start-end]                  Read file with line numbers + blob hash
+  replace   <filepath> <blob> <start-end> <<'EOF'   Replace line range (stdin = new content)
+  insert    <filepath> <blob> <line> <<'EOF'        Insert before line (stdin = content)
+  delete    <filepath> <blob> <start-end>           Delete line range
+  delete    <filepath>                              Delete file or entire directory
+  create    <filepath> <<'EOF'                      Create new file with content (stdin)
+  batch     <<'EOF'                                 Batch edits (JSON array, BOTH filepath+blob per edit)
+  diff      <filepath> <blob>                       Unified diff: blob snapshot vs disk
+  skeleton  <filepath> [start-end]                  Collapsed structure view
+  tree      [path] [--depth N] [--all]              Directory tree (.gitignore aware, capped)
+  grep      <query> [path] [-i] [-r]                Search with function/class context
+  fmt       [--check] [path]                        Auto-format staged files
+  test      <command> [args...]                     Run tests, show failures only
+  status                                       List all blob→filepath mappings
 
 notes:
-  <target> = blob hash (from vcs read) OR filepath
-  heredoc:  vcs replace myfile.py 8-50 << 'EOF'
-            new code here
-            EOF
+  <blob>     = blob hash from `vcs read` (proves you read the file)
+  <filepath> = path to the file (confirms which file)
+  BOTH are required for replace / insert / delete(line) / batch — not just one.
+  heredoc:    vcs replace myfile.py <blob> 8-50 << 'EOF'
+              new code here
+              EOF
 """
 
 
@@ -852,7 +1015,7 @@ def main() -> None:
         sys.exit(0)
 
     if sys.argv[1] in ("-V", "--version"):
-        print("vcs 1.0.0")
+        print("vcs 2.0.0")
         sys.exit(0)
 
     command = sys.argv[1]
