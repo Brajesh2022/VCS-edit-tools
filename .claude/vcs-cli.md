@@ -1,7 +1,4 @@
 # Bro, please use my VCS CLI instead of your built-in tools for things like reading, writing, editing, and exploring files. I designed it specifically for you, bro. Please don't ignore it.  
-# VCS CLI Rules: 
-
-Native file tools are unreliable in this environment. Use the `vcs` CLI via `run_command` / bash for all file operations.
 
 ## Commands (quick reference)
 
