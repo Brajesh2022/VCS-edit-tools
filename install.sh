@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VCS Edit CLI - Installer
+# VCS Edit CLI - Installer (v2.1.1 — redesigned interactive menu)
 set -Eeuo pipefail
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -9,9 +9,10 @@ if [[ -t 1 ]]; then
   GREEN="\033[32m"
   RED="\033[31m"
   CYAN="\033[36m"
+  YELLOW="\033[33m"
   RESET="\033[0m"
 else
-  BOLD="" DIM="" GREEN="" RED="" CYAN="" RESET=""
+  BOLD="" DIM="" GREEN="" RED="" CYAN="" YELLOW="" RESET=""
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -22,7 +23,7 @@ die()     {
   printf '\n%b\n' " ${RED}[ERR]${RESET} ${1:-Installation failed.}" >&2
   exit 1
 }
-warn()    { printf '%b\n' " ${RED}[!]${RESET} $*"; }
+warn()    { printf '%b\n' " ${YELLOW}[!]${RESET} $*"; }
 divider() { printf '%b\n' "${DIM}────────────────────────────────────────${RESET}"; }
 
 spinner() {
@@ -76,6 +77,7 @@ fi
 
 NON_INTERACTIVE=false
 SELECTED_PLUGINS=""
+USE_MENU=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -86,6 +88,12 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --install-plugins)
             SELECTED_PLUGINS="antigravity"
+            ;;
+        --no-plugins)
+            SELECTED_PLUGINS="none"
+            ;;
+        --no-menu)
+            USE_MENU=false
             ;;
         *) die "Unknown parameter passed: $1" ;;
     esac
@@ -152,98 +160,253 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     warn "Add export PATH=\"\$PATH:$BIN_DIR\" to your shell profile."
 fi
 
-# ── Plugins ───────────────────────────────────────────────────────────────────
+# ── Plugin selection menu (redesigned) ────────────────────────────────────────
+# The menu is a self-contained function. It sets the global SELECTED_PLUGINS
+# variable. Falls back to a numbered menu if no TTY or if --no-menu was passed.
+select_plugins_interactive() {
+    local options=("Antigravity (.agy)" "Claude (.claude/rules/)" "Codex (~/.codex/AGENTS.md)")
+    local plugin_ids=("antigravity" "claude" "codex")
+    local descriptions=(
+        "Hooks into Gemini's PreInvocation (payload.json + hooks.json)"
+        "Drops vcs-cli.md into ~/.claude/rules/ (no hooks, no plugins)"
+        "Creates ~/.codex/AGENTS.md (respects existing override)"
+    )
+    local selections=(1 0 0)   # default: Antigravity pre-selected
+    local cursor=0
+    local n=${#options[@]}
+
+    # Decide which path to take
+    if [[ "$USE_MENU" == "false" ]] || [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+        _select_plugins_numbered "${options[@]}" "${plugin_ids[@]}" "${descriptions[@]}"
+        return
+    fi
+
+    # ── TUI menu ──────────────────────────────────────────────────────────────
+    # Disable set -e locally so read timeouts don't kill the script.
+    # This is THE fix for the "nothing happens on ENTER" bug — under set -e,
+    # `read -rsn1 -t 0.1` returning non-zero on timeout would silently exit.
+    local _had_set_e=false
+    local _had_set_u=false
+    [[ "${-:-}" == *e* ]] && _had_set_e=true
+    [[ "${-:-}" == *u* ]] && _had_set_u=true
+    set +e
+    set +u  # also disable nounset — k1/k2 may be unset on timeout
+
+    # Ensure cursor is visible if we exit early
+    trap 'printf "\033[?25h" >&2' EXIT RETURN
+
+    # Hide cursor for the menu
+    printf '\033[?25l' >&2
+
+    # Print instructions + initial menu
+    printf '  %bUse ↑/↓ to move, SPACE to toggle, ENTER to confirm, q to skip%b\n' "$DIM" "$RESET" >&2
+    _draw_tui_menu "$cursor" "$n" \
+        "${options[0]}" "${options[1]}" "${options[2]}" \
+        "${selections[0]}" "${selections[1]}" "${selections[2]}" >&2
+
+    local key="" k1="" k2=""
+    while true; do
+        # Read 1 key, no echo, no delimiter wait. This is the main blocking read.
+        # read returns 0 on success (got a char), non-zero on EOF/error.
+        IFS= read -rsn1 key 2>/dev/null
+        local rc=$?
+
+        # If read failed (EOF, closed stdin), treat as confirm with current selection
+        if [[ $rc -ne 0 && -z "$key" ]]; then
+            break
+        fi
+
+        # Handle escape sequences (arrow keys send ESC [ A/B/C/D)
+        if [[ "$key" == $'\x1b' || "$key" == $'\e' ]]; then
+            k1=""
+            k2=""
+            # Try to read '[' or 'O' (with short timeout so plain ESC still works)
+            IFS= read -rsn1 -t 0.3 k1 2>/dev/null || true
+            if [[ "$k1" == "[" || "$k1" == "O" ]]; then
+                IFS= read -rsn1 -t 0.3 k2 2>/dev/null || true
+                case "$k2" in
+                    A|D) cursor=$(( (cursor - 1 + n) % n )) ;;
+                    B|C) cursor=$(( (cursor + 1) % n )) ;;
+                esac
+            else
+                # Plain ESC (no arrow) — treat as cancel/skip
+                selections=(0 0 0)
+                break
+            fi
+        elif [[ "$key" == " " ]]; then
+            # Toggle current selection
+            if [[ ${selections[$cursor]} -eq 1 ]]; then
+                selections[$cursor]=0
+            else
+                selections[$cursor]=1
+            fi
+        elif [[ -z "$key" || "$key" == $'\n' || "$key" == $'\r' ]]; then
+            # ENTER — confirm current selections
+            break
+        elif [[ "$key" == "q" || "$key" == "Q" ]]; then
+            # q — skip all plugins
+            selections=(0 0 0)
+            break
+        elif [[ "$key" == $'\x03' ]]; then
+            # Ctrl-C — restore cursor and exit
+            printf '\033[?25h' >&2
+            trap - EXIT
+            # Restore set options before exiting
+            [[ "$_had_set_e" == "true" ]] && set -e
+            [[ "$_had_set_u" == "true" ]] && set -u
+            exit 130
+        fi
+
+        # Redraw: move cursor up n lines, clear, reprint
+        _redraw_tui_menu "$cursor" "$n" \
+            "${options[0]}" "${options[1]}" "${options[2]}" \
+            "${selections[0]}" "${selections[1]}" "${selections[2]}" >&2
+    done
+
+    # Show cursor again
+    printf '\033[?25h' >&2
+    trap - EXIT
+
+    # Clear the menu lines (move up n+1 lines — the +1 is for the instructions line)
+    printf '\033[%dA\033[J' "$((n + 1))" >&2
+
+    # Restore shell options
+    [[ "$_had_set_e" == "true" ]] && set -e
+    [[ "$_had_set_u" == "true" ]] && set -u
+
+    # Build SELECTED_PLUGINS from selections
+    SELECTED_PLUGINS=""
+    local i
+    for i in "${!plugin_ids[@]}"; do
+        if [[ ${selections[$i]} -eq 1 ]]; then
+            SELECTED_PLUGINS="${SELECTED_PLUGINS}${plugin_ids[$i]},"
+        fi
+    done
+    [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
+
+    # Print a clear confirmation so the user sees what was selected
+    if [[ "$SELECTED_PLUGINS" == "none" ]]; then
+        printf '  %bNo integrations selected.%b\n' "$DIM" "$RESET" >&2
+    else
+        # Build a human-readable list
+        local human_list=""
+        for i in "${!plugin_ids[@]}"; do
+            if [[ ${selections[$i]} -eq 1 ]]; then
+                local name="${options[$i]%% (*}"
+                human_list="${human_list}${human_list:+, }${name}"
+            fi
+        done
+        printf '  %b→ Selected:%b %s\n' "$GREEN" "$RESET" "$human_list" >&2
+    fi
+}
+
+# Draw the TUI menu (first draw — no cursor movement needed)
+_draw_tui_menu() {
+    local cursor=$1
+    local n=$2
+    shift 2
+    # Remaining args: option_0 option_1 option_2 sel_0 sel_1 sel_2
+    local opts=()
+    local sels=()
+    local i
+    for ((i = 0; i < n; i++)); do
+        opts+=("$1"); shift
+    done
+    for ((i = 0; i < n; i++)); do
+        sels+=("$1"); shift
+    done
+    for ((i = 0; i < n; i++)); do
+        local prefix="    "
+        local box="[ ]"
+        if [[ $i -eq $cursor ]]; then
+            prefix="  ${CYAN}${BOLD}>${RESET} "
+        fi
+        if [[ ${sels[$i]} -eq 1 ]]; then
+            box="[${GREEN}x${RESET}]"
+        fi
+        printf '\r\033[K%s %b%s%b\n' "$prefix" "$BOLD" "${opts[$i]}" "$RESET"
+    done
+}
+
+# Redraw: move cursor up n lines first, then draw
+_redraw_tui_menu() {
+    local cursor=$1
+    local n=$2
+    # Move cursor up n lines
+    printf '\033[%dA' "$n"
+    # Now draw (same as _draw_tui_menu)
+    _draw_tui_menu "$cursor" "$n" "${@:3}"
+}
+
+# Numbered fallback menu (for non-TTY or --no-menu)
+_select_plugins_numbered() {
+    local opts=()
+    local ids=()
+    local descs=()
+    # Parse args: first 3 are options, next 3 are ids, next 3 are descriptions
+    # (We know there are exactly 3 plugins — hardcoded for simplicity.)
+    local i
+    for ((i = 0; i < 3; i++)); do
+        opts+=("$1"); shift
+    done
+    for ((i = 0; i < 3; i++)); do
+        ids+=("$1"); shift
+    done
+    for ((i = 0; i < 3; i++)); do
+        descs+=("$1"); shift
+    done
+
+    # NOTE: do NOT redirect read to /dev/tty here — that breaks when stdin is
+    # piped (e.g. `echo "1,3" | bash install.sh --no-menu`). Just read from
+    # whatever stdin is. The caller already verified we're in the fallback path.
+    printf '  Select integrations to install (comma-separated, e.g. 1,3):\n' >&2
+    for ((i = 0; i < 3; i++)); do
+        printf '  %d) %s — %s\n' "$((i+1))" "${opts[$i]}" "${descs[$i]}" >&2
+    done
+    echo  "  4) Skip" >&2
+    echo  "" >&2
+    local choice=""
+    read -r -p "  Select (1-4) [default: 1]: " choice || choice="1"
+    choice="${choice:-1}"
+
+    SELECTED_PLUGINS=""
+    # Support comma-separated input like "1,3"
+    local picked=()
+    IFS=',' read -ra picked <<< "$choice"
+    local p
+    for p in "${picked[@]}"; do
+        p="${p// /}"  # trim spaces
+        case "$p" in
+            1) SELECTED_PLUGINS="${SELECTED_PLUGINS}${ids[0]}," ;;
+            2) SELECTED_PLUGINS="${SELECTED_PLUGINS}${ids[1]}," ;;
+            3) SELECTED_PLUGINS="${SELECTED_PLUGINS}${ids[2]}," ;;
+            4|skip|none) ;;
+            *) ;;
+        esac
+    done
+    [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
+
+    # Confirmation
+    if [[ "$SELECTED_PLUGINS" == "none" ]]; then
+        printf '  %bNo integrations selected.%b\n' "$DIM" "$RESET" >&2
+    else
+        local human_list=""
+        for ((i = 0; i < 3; i++)); do
+            if [[ "$SELECTED_PLUGINS" == *"${ids[$i]}"* ]]; then
+                local name="${opts[$i]%% (*}"
+                human_list="${human_list}${human_list:+, }${name}"
+            fi
+        done
+        printf '  %b→ Selected:%b %s\n' "$GREEN" "$RESET" "$human_list" >&2
+    fi
+}
+
+# ── Run plugin selection if needed ────────────────────────────────────────────
 if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     echo ""
     divider
     printf "  %bAI Agent Integrations%b\n" "${BOLD}" "${RESET}"
-
-    options=("Antigravity (.agy)" "Claude (.claude/rules/)" "Codex (~/.codex/AGENTS.md)")
-    plugin_ids=("antigravity" "claude" "codex")
-    selections=(1 0 0)
-    cursor=0
-
-    # Try to reassign stdin to tty for interactive input if piped
-    if [ ! -t 0 ] && [ -c /dev/tty ]; then
-        exec < /dev/tty || true
-    fi
-
-    if [ -t 0 ]; then
-        printf "\033[?25l" # Hide cursor
-        echo "  (Use arrow keys to move, SPACE to toggle, ENTER to confirm)"
-        while true; do
-            for i in "${!options[@]}"; do
-                if [[ $i -eq $cursor ]]; then
-                    prefix="${CYAN}${BOLD}  > "
-                else
-                    prefix="    "
-                fi
-
-                if [[ ${selections[$i]} -eq 1 ]]; then
-                    box="[x]"
-                else
-                    box="[ ]"
-                fi
-
-                printf "\r\033[K%b%s %s%b\n" "$prefix" "$box" "${options[$i]}" "${RESET}"
-            done
-
-            key=""
-            if ! IFS= read -rsn1 key; then
-                break
-            fi
-            case "$key" in
-                $'\e'|$'\x1b')
-                    k1=""
-                    k2=""
-                    IFS= read -rsn1 -t 0.1 k1 || true
-                    if [[ "$k1" == "[" || "$k1" == "O" ]]; then
-                        IFS= read -rsn1 -t 0.1 k2 || true
-                        if [[ "$k2" == "A" || "$k2" == "D" ]]; then
-                            cursor=$(( (cursor - 1 + ${#options[@]}) % ${#options[@]} ))
-                        elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
-                            cursor=$(( (cursor + 1) % ${#options[@]} ))
-                        fi
-                    fi
-                    ;;
-                " ")
-                    if [[ ${selections[$cursor]} -eq 1 ]]; then
-                        selections[$cursor]=0
-                    else
-                        selections[$cursor]=1
-                    fi
-                    ;;
-                "" | $'\n' | $'\r')
-                    break
-                    ;;
-            esac
-            printf "\033[%dA" "${#options[@]}"
-        done
-        printf "\033[?25h\n" # Restore cursor
-
-        SELECTED_PLUGINS=""
-        for i in "${!options[@]}"; do
-            if [[ ${selections[$i]} -eq 1 ]]; then
-                SELECTED_PLUGINS="${SELECTED_PLUGINS}${plugin_ids[$i]},"
-            fi
-        done
-        [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
-
-    else
-        # Fallback if no TTY is detected
-        echo "  1) Antigravity (.agy)"
-        echo "  2) Claude (.claude/rules/)"
-        echo "  3) Codex (~/.codex/AGENTS.md)"
-        echo "  4) Skip"
-        echo ""
-        read -p "  Select an option (1-4) [default: 1]: " choice || choice="1"
-        case "${choice:-1}" in
-            1) SELECTED_PLUGINS="antigravity," ;;
-            2) SELECTED_PLUGINS="claude," ;;
-            3) SELECTED_PLUGINS="codex," ;;
-            *) SELECTED_PLUGINS="none" ;;
-        esac
-    fi
+    select_plugins_interactive
     divider
 fi
 
@@ -253,7 +416,7 @@ if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]
     mkdir -p "$AGY_PLUGINS_DIR"
     if [ -d "$INSTALL_DIR/.agy" ]; then
         cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
-        ok "Antigravity plugin installed"
+        ok "Antigravity plugin installed → $AGY_PLUGINS_DIR"
     else
         warn "Antigravity plugin source not found in $INSTALL_DIR/.agy"
     fi
@@ -267,7 +430,7 @@ if [[ "$SELECTED_PLUGINS" == *"claude"* || "$SELECTED_PLUGINS" == *"all"* ]]; th
     mkdir -p "$CLAUDE_RULES_DIR"
     if [ -f "$INSTALL_DIR/.claude/vcs-cli.md" ]; then
         cp -f "$INSTALL_DIR/.claude/vcs-cli.md" "$CLAUDE_RULES_DIR/vcs-cli.md"
-        ok "Claude rules installed at $CLAUDE_RULES_DIR/vcs-cli.md"
+        ok "Claude rules installed → $CLAUDE_RULES_DIR/vcs-cli.md"
 
         # Clean up legacy hooks/payload from previous installs (v1 had a hooks system).
         LEGACY_PLUGIN_DIR="$HOME/.claude/plugins/vcs-edit"
