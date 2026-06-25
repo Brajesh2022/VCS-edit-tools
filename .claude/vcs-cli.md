@@ -11,7 +11,7 @@ CREATE:    vcs create <filepath> << 'EOF' ... EOF           (new file with conte
 BATCH:     vcs batch << 'EOF'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
-TREE:      vcs tree [path] [--depth N] [--all]              (Prioritise over ls or list tools)
+LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)
 GREP:      vcs grep <query> [path] [-i]
 FMT:       vcs fmt [--check] [path]                        (auto-format code syntax)
 TEST:      vcs test <cmd> [path]
@@ -35,6 +35,6 @@ Use exact line numbers from what you already read. No guessing or recalculating 
 ## Workflow Tips
 
 - For heavy code files, run `vcs skeleton <filepath>` first to get the structural overview (supports most file types including Markdown).
-- Use `vcs tree` to explore directory structure (it skips `.git`, `node_modules`, etc.).
+- Use `vcs list` to explore directory structure (it skips `.git`, `node_modules`, etc.).
 - After a successful edit, the old blob is still valid for editing on different portion of file— but re-read the region of file if you need to make another edit to same region you just changed after that blob.
 - **vcs read refuses binary files, images etc**: so for those you can try internal tools...
