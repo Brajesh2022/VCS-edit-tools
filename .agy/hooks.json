@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "cat /data/data/com.termux/files/home/.gemini/config/plugins/vcs-edit/payload.json"
+        "command": "cat ${CLAUDE_PROJECT_DIR}/.agy/payload.json"
       }
     ]
   }
