@@ -14,7 +14,7 @@ Commands:
     vcs batch << 'EOF' [...json...] EOF
     vcs diff <filepath> <blob>
     vcs skeleton <filepath> [start-end]
-    vcs tree [path] [--depth N] [--all]
+    vcs list [path] [--depth N] [--all]
     vcs grep <query> [path] [-i] [-r]
     vcs fmt [--check] [path]
     vcs test <command> [path]
@@ -884,16 +884,16 @@ def cmd_skeleton(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: tree
+# Command: list
 # ---------------------------------------------------------------------------
 
-def cmd_tree(args: list[str]) -> None:
-    """vcs tree [path] [--depth N] [--all]"""
-    script = os.path.join(SCRIPT_DIR, "tree.py")
+def cmd_list(args: list[str]) -> None:
+    """vcs list [path] [--depth N] [--all]"""
+    script = os.path.join(SCRIPT_DIR, "list.py")
     if not os.path.exists(script):
-        _error("tree.py not found")
+        _error("list.py not found")
 
-    # Pass all args through to tree.py
+    # Pass all args through to list.py
     cmd = [sys.executable, script] + args
 
     try:
@@ -1121,7 +1121,7 @@ COMMANDS = {
     "batch": cmd_batch,
     "diff": cmd_diff,
     "skeleton": cmd_skeleton,
-    "tree": cmd_tree,
+    "list": cmd_list,
     "grep": cmd_grep,
     "fmt": cmd_fmt,
     "test": cmd_test,
@@ -1142,7 +1142,7 @@ commands:
   batch     <<'EOF'                                 Batch edits (JSON array, BOTH filepath+blob per edit)
   diff      <filepath> <blob>                       Unified diff: blob snapshot vs disk
   skeleton  <filepath> [start-end]                  Collapsed structure view
-  tree      [path] [--depth N] [--all]              Directory tree (.gitignore aware, capped)
+  list      [path] [--depth N] [--all]              Directory list (.gitignore aware, capped)
   grep      <query> [path] [-i] [-r]                Search with function/class context
   fmt       [--check] [path]                        Auto-format staged files
   test      <command> [args...]                     Run tests, show failures only

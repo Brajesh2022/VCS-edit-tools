@@ -366,28 +366,28 @@ def test_skeleton(tmp_repo):
 
 
 # ---------------------------------------------------------------------------
-# vcs tree
+# vcs list
 # ---------------------------------------------------------------------------
 
-def test_tree(tmp_repo):
+def test_list(tmp_repo):
     (tmp_repo / "subdir").mkdir()
     (tmp_repo / "subdir" / "file.txt").write_text("hi\n")
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "1"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "1"])
     assert code == 0
     assert "subdir" in out
 
 
-def test_tree_does_not_say_agy_tree(tmp_repo):
-    """v2: the tree command's footer must say `vcs tree`, not `agy-tree`."""
+def test_list_does_not_say_agy_tree(tmp_repo):
+    """v2: the tree command's footer must say `vcs list`, not `agy-list`."""
     (tmp_repo / "subdir").mkdir()
     (tmp_repo / "subdir" / "file.txt").write_text("hi\n")
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "1"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "1"])
     assert code == 0
-    assert "agy-tree" not in out
-    assert "vcs tree" in out
+    assert "agy-list" not in out
+    assert "vcs list" in out
 
 
-def test_tree_summary_format(tmp_repo):
+def test_list_summary_format(tmp_repo):
     """v2: directories show `(N dirs, M files)` style summaries."""
     d = tmp_repo / "Frontend"
     d.mkdir()
@@ -395,7 +395,7 @@ def test_tree_summary_format(tmp_repo):
     (d / "b.txt").write_text("b\n")
     (d / "sub1").mkdir()
     (d / "sub2").mkdir()
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "1"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "1"])
     assert code == 0
     # The Frontend dir should show a dirs/files summary
     assert "Frontend" in out
@@ -403,31 +403,31 @@ def test_tree_summary_format(tmp_repo):
     assert "file" in out
 
 
-def test_tree_caps_large_directories(tmp_repo):
+def test_list_caps_large_directories(tmp_repo):
     """v2: a subdirectory with 10+ items should NOT be recursed into.
 
     We assert all three legs of the contract:
       1. The subdirectory itself is still named in the parent listing.
-      2. The cap notice ("capped at N items") is printed.
+      2. The cap notice ("many items") is printed.
       3. NONE of the file_N.txt entries inside the capped subdir appear.
     """
     d = tmp_repo / "big"
     d.mkdir()
     for i in range(15):
         (d / f"file_{i}.txt").write_text(f"content {i}\n")
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "3"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "3"])
     assert code == 0
     # Leg 1: the dir is named
     assert "big" in out
     # Leg 2: cap notice is shown
-    assert "capped at" in out
+    assert "many items" in out
     # Leg 3: files inside the capped dir are NOT listed
     assert "file_0.txt" not in out
     assert "file_7.txt" not in out
     assert "file_14.txt" not in out
 
 
-def test_tree_does_not_cap_small_subdirs(tmp_repo):
+def test_list_does_not_cap_small_subdirs(tmp_repo):
     """v2: a small subdirectory should still be recursed into, even if its
     sibling directory is also small. The cap is per-child, not per-parent.
     Regression test for the bug where `too_many` was based on the parent's
@@ -440,16 +440,16 @@ def test_tree_does_not_cap_small_subdirs(tmp_repo):
     (tmp_repo / "small_a" / "a2.txt").write_text("a\n")
     (tmp_repo / "small_b").mkdir()
     (tmp_repo / "small_b" / "b1.txt").write_text("b\n")
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "2"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "2"])
     assert code == 0
     # Both subdirs were recursed into (their files appear)
     assert "a1.txt" in out
     assert "b1.txt" in out
     # No cap notice should appear (everything is small)
-    assert "capped at" not in out
+    assert "many items" not in out
 
 
-def test_tree_caps_on_child_count_not_parent(tmp_repo):
+def test_list_caps_on_child_count_not_parent(tmp_repo):
     """v2: if the parent has many small subdirs, we still recurse into each
     small one. If a single child has 10+ items, only THAT child is capped.
 
@@ -469,13 +469,13 @@ def test_tree_caps_on_child_count_not_parent(tmp_repo):
     for i in range(11):
         (big / f"f{i}.txt").write_text("x\n")
 
-    code, out, err = _run(["tree", str(tmp_repo), "--depth", "2"])
+    code, out, err = _run(["list", str(tmp_repo), "--depth", "2"])
     assert code == 0
     # The 12 tiny subdirs WERE recursed into (their inside.txt files appear)
     assert "inside.txt" in out
     # The big subdir was capped (its files do NOT appear)
     assert "f0.txt" not in out
-    assert "capped at" in out
+    assert "many items" in out
 
 
 def test_batch_rejects_non_dict_json(tmp_repo):
@@ -523,7 +523,7 @@ def test_create_recovers_cleanly_from_makedirs_failure(tmp_repo):
     assert not f.exists()
 
 
-def test_tree_handles_symlink_cycles(tmp_repo):
+def test_list_handles_symlink_cycles(tmp_repo):
     """v2: a symlink cycle inside a hidden directory must NOT cause an
     infinite loop in count_files_capped. Regression test for the Gemini
     symlink-loop finding.
@@ -541,7 +541,7 @@ def test_tree_handles_symlink_cycles(tmp_repo):
 
     # This should complete quickly, not hang. Use a short timeout.
     import subprocess as sp
-    cmd = [sys.executable, CLI, "tree", str(tmp_repo), "--depth", "1"]
+    cmd = [sys.executable, CLI, "list", str(tmp_repo), "--depth", "1"]
     try:
         result = sp.run(cmd, capture_output=True, text=True, cwd=str(tmp_repo), timeout=10)
     except sp.TimeoutExpired:
@@ -578,7 +578,7 @@ def test_help_lists_commands():
     code, out, err = _run(["--help"])
     assert code == 0
     for cmd in ("read", "replace", "insert", "delete", "create", "batch", "diff",
-                "skeleton", "tree", "grep", "fmt", "test", "status"):
+                "skeleton", "list", "grep", "fmt", "test", "status"):
         assert cmd in out
 
 
