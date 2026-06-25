@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "cat /data/data/com.termux/files/home/.gemini/config/plugins/vcs-edit/payload.json"
+        "command": "python -c \"import sys,os; sys.stdout.write(open(os.path.expanduser('~/.gemini/config/plugins/vcs-edit/payload.json')).read())\""
       }
     ]
   }

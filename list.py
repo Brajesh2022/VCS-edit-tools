@@ -474,9 +474,9 @@ def main():
     # Footer — uses `vcs list` (was previously `agy-tree`)
     print("---")
     if args.depth > 1:
-        print(f"Use `vcs tree <subdir>` to expand any directory above (depth={args.depth}).")
+        print(f"Use `vcs list <subdir>` to expand any directory above (depth={args.depth}).")
     else:
-        print(f"Use `vcs tree <subdir>` to expand any directory above.")
+        print(f"Use `vcs list <subdir>` to expand any directory above.")
 
 
 if __name__ == '__main__':
