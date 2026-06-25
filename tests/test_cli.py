@@ -404,15 +404,151 @@ def test_tree_summary_format(tmp_repo):
 
 
 def test_tree_caps_large_directories(tmp_repo):
-    """v2: directories with 10+ items should be capped (no full recursion)."""
+    """v2: a subdirectory with 10+ items should NOT be recursed into.
+
+    We assert all three legs of the contract:
+      1. The subdirectory itself is still named in the parent listing.
+      2. The cap notice ("capped at N items") is printed.
+      3. NONE of the file_N.txt entries inside the capped subdir appear.
+    """
     d = tmp_repo / "big"
     d.mkdir()
     for i in range(15):
         (d / f"file_{i}.txt").write_text(f"content {i}\n")
     code, out, err = _run(["tree", str(tmp_repo), "--depth", "3"])
     assert code == 0
-    # Should mention the cap or just show summary without listing all 15 files
+    # Leg 1: the dir is named
     assert "big" in out
+    # Leg 2: cap notice is shown
+    assert "capped at" in out
+    # Leg 3: files inside the capped dir are NOT listed
+    assert "file_0.txt" not in out
+    assert "file_7.txt" not in out
+    assert "file_14.txt" not in out
+
+
+def test_tree_does_not_cap_small_subdirs(tmp_repo):
+    """v2: a small subdirectory should still be recursed into, even if its
+    sibling directory is also small. The cap is per-child, not per-parent.
+    Regression test for the bug where `too_many` was based on the parent's
+    n_visible.
+    """
+    # Parent (tmp_repo) has only 2 subdirs (small n_visible), but one child
+    # is also small. Both should be recursed into.
+    (tmp_repo / "small_a").mkdir()
+    (tmp_repo / "small_a" / "a1.txt").write_text("a\n")
+    (tmp_repo / "small_a" / "a2.txt").write_text("a\n")
+    (tmp_repo / "small_b").mkdir()
+    (tmp_repo / "small_b" / "b1.txt").write_text("b\n")
+    code, out, err = _run(["tree", str(tmp_repo), "--depth", "2"])
+    assert code == 0
+    # Both subdirs were recursed into (their files appear)
+    assert "a1.txt" in out
+    assert "b1.txt" in out
+    # No cap notice should appear (everything is small)
+    assert "capped at" not in out
+
+
+def test_tree_caps_on_child_count_not_parent(tmp_repo):
+    """v2: if the parent has many small subdirs, we still recurse into each
+    small one. If a single child has 10+ items, only THAT child is capped.
+
+    Regression test for the Gemini/AGY bug: the old code capped all children
+    when the parent was big, AND recursed into huge children when the parent
+    was small.
+    """
+    # Create 12 tiny subdirs in the parent (parent n_visible = 12 >= 10).
+    # Old buggy code would have skipped recursion for ALL of them.
+    for i in range(12):
+        sub = tmp_repo / f"tiny_{i}"
+        sub.mkdir()
+        (sub / "inside.txt").write_text("x\n")
+    # Create one big subdir with 11 files.
+    big = tmp_repo / "big"
+    big.mkdir()
+    for i in range(11):
+        (big / f"f{i}.txt").write_text("x\n")
+
+    code, out, err = _run(["tree", str(tmp_repo), "--depth", "2"])
+    assert code == 0
+    # The 12 tiny subdirs WERE recursed into (their inside.txt files appear)
+    assert "inside.txt" in out
+    # The big subdir was capped (its files do NOT appear)
+    assert "f0.txt" not in out
+    assert "capped at" in out
+
+
+def test_batch_rejects_non_dict_json(tmp_repo):
+    """v2: JSON arrays with non-object elements (e.g. [1, 2, 3]) should be
+    cleanly rejected, not crash with AttributeError.
+    """
+    code, out, err = _run(["batch"], input_data="[1, 2, 3]")
+    assert code == 2
+    assert "REJECTED" in out
+    assert "JSON object" in out
+
+
+def test_batch_rejects_v1_5_part_format_cleanly(tmp_repo):
+    """v2: the legacy v1 text format `=== REPLACE target 8-50 ===` (5 parts,
+    no blob) should be cleanly rejected with the missing-blob message,
+    NOT silently dropped.
+    """
+    code, out, err = _run(["batch"], input_data="=== REPLACE file.py 8-50 ===\nnew content\n")
+    assert code == 2
+    assert "REJECTED" in out
+    assert "missing blob" in out.lower()
+
+
+def test_create_recovers_cleanly_from_makedirs_failure(tmp_repo):
+    """v2: if os.makedirs raises OSError in cmd_create, we should not crash
+    with NameError (tmp_path unbound) — we should print a clean error and
+    exit 2. Regression test for the Gemini finding.
+
+    We trigger a real failure by putting a regular file at an intermediate
+    path where a directory is expected. makedirs(parent, exist_ok=True)
+    raises FileExistsError (subclass of OSError) when the path exists but
+    is not a directory.
+    """
+    # Create a regular file at `blocker` — then ask vcs to create
+    # `blocker/subdir/new.txt`, which requires makedirs("blocker/subdir").
+    # `blocker` is a file, not a dir, so makedirs fails with NotADirectoryError
+    # (subclass of OSError).
+    blocker = tmp_repo / "blocker"
+    blocker.write_text("I am a file, not a dir\n")
+    f = tmp_repo / "blocker" / "subdir" / "new.txt"
+    code, out, err = _run(["create", str(f)], input_data="content\n")
+    assert code == 2
+    assert "failed to create" in err.lower()
+    # Verify the file was NOT created
+    assert not f.exists()
+
+
+def test_tree_handles_symlink_cycles(tmp_repo):
+    """v2: a symlink cycle inside a hidden directory must NOT cause an
+    infinite loop in count_files_capped. Regression test for the Gemini
+    symlink-loop finding.
+    """
+    # Create a hidden directory with a symlink cycle: .vcs_snapshots/self -> .
+    # The tree command lists .vcs_snapshots in the hidden summary, calling
+    # count_files_capped on it. Without the symlink guard, this would loop.
+    hidden = tmp_repo / "node_modules"
+    hidden.mkdir()
+    (hidden / "real_file.txt").write_text("x\n")
+    # Symlink cycle: node_modules/loop -> node_modules
+    os.symlink(".", str(hidden / "loop"))
+    # Symlink to ancestor: node_modules/up -> ..
+    os.symlink("..", str(hidden / "up"))
+
+    # This should complete quickly, not hang. Use a short timeout.
+    import subprocess as sp
+    cmd = [sys.executable, CLI, "tree", str(tmp_repo), "--depth", "1"]
+    try:
+        result = sp.run(cmd, capture_output=True, text=True, cwd=str(tmp_repo), timeout=10)
+    except sp.TimeoutExpired:
+        pytest.fail("tree command hung on symlink cycle (infinite loop)")
+    assert result.returncode == 0
+    # The hidden dir is mentioned in the summary
+    assert "node_modules" in result.stdout
 
 
 # ---------------------------------------------------------------------------

@@ -161,20 +161,29 @@ def count_files_capped(path: Path, cap: int = HIDDEN_DIR_COUNT_CAP) -> int:
     Used for the hidden-directory summary at the bottom of the output.
     Skips other hidden directories to avoid walking node_modules inside
     node_modules etc.
+
+    Uses breadth-first traversal (deque.popleft) so we hit the cap on the
+    shallow, broad parts of the tree first — gives a more representative
+    count when the cap kicks in. Also refuses to follow symlinks to prevent
+    infinite loops on symlink cycles (e.g. `ln -s .. self_loop`).
     """
+    from collections import deque
     count = 0
-    stack = [path]
-    while stack:
-        current = stack.pop()
+    queue = deque([path])
+    while queue:
+        current = queue.popleft()
         try:
             for entry in current.iterdir():
                 if count >= cap:
                     return count  # fast exit
+                # Skip symlinks to prevent infinite loops on cycles
+                if entry.is_symlink():
+                    continue
                 if entry.is_dir():
                     # Don't descend into nested hidden dirs
                     if entry.name in HIDDEN_DIRS:
                         continue
-                    stack.append(entry)
+                    queue.append(entry)
                 else:
                     count += 1
         except (PermissionError, OSError):
@@ -287,10 +296,13 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
     lines = []
     n_visible = len(visible)
 
-    # v2: if this directory has too many entries, don't recurse — just summarize
-    # and stop. This is the user's "10 items cap" proposal.
-    too_many = n_visible >= DIR_ITEM_CAP
-
+    # v2 cap logic: we ALWAYS list all immediate children of the current
+    # directory (the user explicitly asked to see this folder). The cap
+    # decides whether to RECURSE INTO each child directory based on the
+    # child's own item count — not the parent's. This was the bug pointed
+    # out by both Gemini and AGY reviewers: the previous code used the
+    # parent's n_visible, which both skipped empty subdirs (when parent
+    # was big) AND recursed into huge subdirs (when parent was small).
     for i, entry in enumerate(visible):
         is_last = (i == n_visible - 1)
         connector = '└── ' if is_last else '├── '
@@ -300,8 +312,10 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
             summary = _format_dir_summary(n_dirs, n_files)
             lines.append(f"{prefix}{connector}{entry.name}/  ({summary})")
 
-            # v2: skip recursion if too many items OR we're already at max depth
-            if current_depth < max_depth and not too_many:
+            # v2: skip recursion if THIS subdirectory has too many items
+            # OR we're already at max depth
+            child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
+            if current_depth < max_depth and not child_too_many:
                 extension = '    ' if is_last else '│   '
                 sub_lines = build_tree(
                     entry, root_path, current_depth + 1, max_depth,
@@ -309,7 +323,7 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
                     prefix + extension, hidden_summary
                 )
                 lines.extend(sub_lines)
-            elif too_many and current_depth < max_depth:
+            elif child_too_many and current_depth < max_depth:
                 # Indicate that we skipped recursion for performance
                 ext = '    ' if is_last else '│   '
                 lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
@@ -363,8 +377,9 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
 
     lines = []
     n_visible = len(visible)
-    too_many = n_visible >= DIR_ITEM_CAP
 
+    # v2 cap logic: same as build_tree — base the cap on the CHILD's own
+    # item count, not the parent's. See build_tree for the full rationale.
     for i, entry in enumerate(visible):
         is_last = (i == n_visible - 1)
         connector = '└── ' if is_last else '├── '
@@ -372,7 +387,8 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
             n_dirs, n_files = _count_direct_children(entry)
             summary = _format_dir_summary(n_dirs, n_files)
             lines.append(f"{prefix}{connector}{entry.name}/  ({summary})")
-            if current_depth < max_depth and not too_many:
+            child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
+            if current_depth < max_depth and not child_too_many:
                 extension = '    ' if is_last else '│   '
                 sub_lines = build_tree_filtered(
                     entry, root_path, current_depth + 1, max_depth,
@@ -380,6 +396,9 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
                     prefix + extension, hidden_summary
                 )
                 lines.extend(sub_lines)
+            elif child_too_many and current_depth < max_depth:
+                ext = '    ' if is_last else '│   '
+                lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
         else:
             size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")

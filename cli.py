@@ -457,12 +457,13 @@ def cmd_create(args: list[str]) -> None:
 
     # Create parent directories if needed
     parent = os.path.dirname(os.path.abspath(filepath))
-    os.makedirs(parent, exist_ok=True)
+    tmp_path = None  # initialized upfront so the except block can safely reference it
 
     if content and not content.endswith('\n'):
         content += '\n'
 
     try:
+        os.makedirs(parent, exist_ok=True)
         # Atomic write: temp file in same dir, then rename
         fd, tmp_path = tempfile.mkstemp(
             dir=parent or ".",
@@ -472,12 +473,12 @@ def cmd_create(args: list[str]) -> None:
             fh.write(content)
         os.replace(tmp_path, filepath)
     except OSError as e:
-        # Cleanup temp file on failure
-        try:
-            if os.path.exists(tmp_path):
+        # Cleanup temp file on failure (tmp_path may still be None if mkstemp failed)
+        if tmp_path and os.path.exists(tmp_path):
+            try:
                 os.remove(tmp_path)
-        except OSError:
-            pass
+            except OSError:
+                pass
         _error(f"failed to create '{filepath}': {e}")
 
     # Register the new file's blob so the agent can immediately edit it
@@ -523,8 +524,11 @@ def cmd_batch(args: list[str]) -> None:
                     edits.append(current_edit)
 
                 parts = line.strip().split(" ")
-                # Format: === <OP> <filepath> <blob> <range> ===
-                # OR legacy: === <OP> <target> <range> === (will be rejected below)
+                # Format: === <OP> <filepath> <blob> <range> ===   (v2, 6 parts)
+                # OR legacy v1: === <OP> <target> <range> ===       (5 parts, blob missing)
+                # We accept both so the v1 format gets cleanly rejected by the
+                # validation loop below with a helpful "missing blob" message
+                # instead of being silently dropped.
                 if len(parts) >= 6:
                     op = parts[1].lower()
                     filepath = parts[2]
@@ -534,6 +538,23 @@ def cmd_batch(args: list[str]) -> None:
                         "type": op,
                         "filepath": filepath,
                         "blob": blob,
+                    }
+                    if op in ("replace", "delete"):
+                        current_edit["line_range"] = rng
+                    elif op == "insert":
+                        current_edit["line_str"] = rng
+                    content_lines = []
+                elif len(parts) == 5:
+                    # Legacy v1 format: === <OP> <target> <range> ===
+                    # Parse it but leave blob=None so the validation loop
+                    # rejects it cleanly with "missing blob".
+                    op = parts[1].lower()
+                    filepath = parts[2]
+                    rng = parts[3]
+                    current_edit = {
+                        "type": op,
+                        "filepath": filepath,
+                        "blob": None,  # will be rejected below
                     }
                     if op in ("replace", "delete"):
                         current_edit["line_range"] = rng
@@ -561,12 +582,17 @@ def cmd_batch(args: list[str]) -> None:
     if not edits:
         _error("no edits parsed from input — expected JSON array or `=== OP filepath blob range ===` blocks")
 
-    # Validate: every edit must have BOTH filepath AND blob
+    # Validate: every edit must be a dict with BOTH filepath AND blob.
+    # Non-dict JSON elements (e.g. `[1, 2, 3]`) are rejected explicitly to
+    # avoid a confusing AttributeError when we try to call .get() on them.
     for i, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            print(f"  [{i}] REJECTED: edit must be a JSON object (got {type(edit).__name__})")
+            sys.exit(2)
         # Backward-compat: accept `target` and copy to filepath if no filepath
         if "filepath" not in edit and "target" in edit:
             edit["filepath"] = edit["target"]
-        if "blob" not in edit:
+        if not edit.get("blob"):
             print(f"  [{i}] REJECTED: missing blob (batch requires both filepath AND blob)")
             sys.exit(2)
         if not edit.get("filepath"):
