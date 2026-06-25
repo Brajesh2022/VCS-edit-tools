@@ -326,7 +326,7 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
             elif child_too_many and current_depth < max_depth:
                 # Indicate that we skipped recursion for performance
                 ext = '    ' if is_last else '│   '
-                lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
+                lines.append(f"{prefix}{ext}└── … (many items)")
         else:
             size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
@@ -398,7 +398,7 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
                 lines.extend(sub_lines)
             elif child_too_many and current_depth < max_depth:
                 ext = '    ' if is_last else '│   '
-                lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
+                lines.append(f"{prefix}{ext}└── … (many items)")
         else:
             size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
