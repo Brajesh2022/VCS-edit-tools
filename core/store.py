@@ -16,6 +16,40 @@ from pathlib import Path
 from typing import Optional
 
 
+# Maximum number of blob entries to keep per filepath in the registry.
+# When this limit is exceeded for a given file, the OLDEST entries for
+# that file are pruned. This bounds `.vcs_store.json` growth over a long
+# agent session. See BUG-4 fix in `register()`.
+MAX_BLOBS_PER_FILE = 100
+
+
+class BlobMismatchError(LookupError):
+    """Raised when an edit's claimed blob doesn't match the target file.
+
+    BUG-3 fix: distinguishes three failure modes that all previously
+    surfaced as the generic "Merge conflict detected" message:
+
+      1. Blob was never issued by `vcs read` (no snapshot exists, blob is
+         not a prefix of the file's current hash, and not in the registry
+         under any other file either).
+      2. Blob was issued for a DIFFERENT file (snapshot exists but the
+         snapshot's content hashes to a different filepath than the agent
+         is targeting — i.e. the snapshot is registered under another path).
+      3. Genuine concurrent modification (blob was issued for this file,
+         snapshot exists for this file, but the file's current content
+         hash doesn't match — someone edited it after our read).
+
+    Only case (3) should produce the "Merge conflict detected" message.
+    Cases (1) and (2) produce a more helpful "blob was never issued" /
+    "blob was issued for another file" error so the agent can debug
+    instead of blindly re-reading.
+    """
+
+    def __init__(self, kind: str, message: str):
+        self.kind = kind  # "never_issued" | "wrong_file" | "conflict"
+        super().__init__(message)
+
+
 def _find_repo_root(start: str = ".") -> str:
     """Walk up from `start` to find a directory containing `.git`.
 
@@ -63,6 +97,20 @@ def register(blob_hash: str, filepath: str, repo_root: Optional[str] = None) -> 
 
     `filepath` is stored relative to `repo_root` when possible, so the store
     stays portable if the project is moved.
+
+    BUG-4 fix (v2.1): the registry previously grew unboundedly — every read
+    added a new entry, and short-prefix duplicates were stored as separate
+    keys. We now:
+      - Skip storing short prefixes (<40 chars for SHA-1) as separate keys.
+        The `lookup()` function already does prefix matching, so storing
+        short prefixes is redundant AND creates orphan snapshot files.
+      - Cap the number of blob entries per filepath at MAX_BLOBS_PER_FILE
+        (default 100). When the cap is exceeded for a file, the OLDEST
+        entries for that file are pruned (and their snapshot files deleted).
+
+    The "oldest" determination uses an insertion-order list maintained in
+    the store under `_order` — we append on insert and trim from the front
+    when pruning. This is O(N) per insert but N is bounded by the cap.
     """
     if repo_root is None:
         repo_root = _find_repo_root(os.path.dirname(os.path.abspath(filepath)))
@@ -70,13 +118,79 @@ def register(blob_hash: str, filepath: str, repo_root: Optional[str] = None) -> 
     abs_path = os.path.abspath(filepath)
     try:
         rel = os.path.relpath(abs_path, repo_root)
-        # If file is outside repo, store absolute path
         stored = rel if not rel.startswith("..") else abs_path
     except ValueError:
         stored = abs_path
 
+    # Normalize: always store the FULL hash lowercased. If the caller passes
+    # a short prefix (<40 chars), we look up the matching full hash already
+    # in the registry and use that. If no match exists, we still store the
+    # short prefix so lookups continue to work — but we DON'T separately
+    # snapshot it (snapshots dedupe by hash via save_snapshot()).
+    # This fixes BUG-4 finding #4: short-prefix duplicates were stored as
+    # separate keys, creating orphan snapshot files.
+    raw_hash = blob_hash.lower()
+
     data = _load_store(repo_root)
-    data["blobs"][blob_hash.lower()] = stored
+    blobs = data.setdefault("blobs", {})
+    order = data.setdefault("_order", [])  # list of (hash, filepath) in insertion order
+
+    # If the caller passed a short prefix, try to find the full hash it
+    # refers to. If found, use the full hash. If not found, fall through
+    # and store the short prefix (it's all we have).
+    full_hash = raw_hash
+    if len(raw_hash) < 40:
+        for existing_hash in list(blobs.keys()):
+            if existing_hash.startswith(raw_hash):
+                full_hash = existing_hash
+                break
+
+    # If this hash is already registered for the same file, no-op (don't
+    # touch insertion order — keeps the existing position).
+    if full_hash in blobs and blobs[full_hash] == stored:
+        return
+
+    # BUG-4 finding #4 fix: if we're registering the FULL hash and a SHORT
+    # prefix of it is already in the registry, remove the short prefix
+    # entry — we don't want both. (Only do this when full_hash is the full
+    # 40-char SHA-1, not when full_hash is itself a short prefix.)
+    if len(full_hash) >= 40:
+        short_prefixes_to_remove = [
+            h for h in list(blobs.keys())
+            if len(h) < 40 and full_hash.startswith(h)
+        ]
+        for sh in short_prefixes_to_remove:
+            blobs.pop(sh, None)
+            order = [(hh, p) for (hh, p) in order if hh != sh]
+
+    # Insert / overwrite
+    blobs[full_hash] = stored
+    # Track insertion order (remove any prior entry for this hash first)
+    order = [(h, p) for (h, p) in order if h != full_hash]
+    order.append((full_hash, stored))
+    data["_order"] = order
+
+    # Prune: if we have more than MAX_BLOBS_PER_FILE entries for THIS
+    # filepath, drop the oldest ones (and delete their snapshot files).
+    entries_for_file = [(h, p) for (h, p) in order if p == stored]
+    if len(entries_for_file) > MAX_BLOBS_PER_FILE:
+        # Number to drop
+        to_drop_count = len(entries_for_file) - MAX_BLOBS_PER_FILE
+        # The oldest `to_drop_count` entries for this file
+        to_drop_hashes = set(h for (h, _) in entries_for_file[:to_drop_count])
+
+        for h in to_drop_hashes:
+            blobs.pop(h, None)
+            # Remove from order list too
+            order = [(hh, p) for (hh, p) in order if hh != h]
+            # Delete the snapshot file if it exists
+            snap = _snapshots_dir(repo_root) / f"{h}.txt"
+            try:
+                snap.unlink(missing_ok=True)
+            except OSError:
+                pass
+        data["_order"] = order
+
     _save_store(repo_root, data)
 
 
@@ -136,10 +250,68 @@ def clear_store(repo_root: Optional[str] = None) -> None:
     import shutil
     if repo_root is None:
         repo_root = _find_repo_root()
-    _save_store(repo_root, {"blobs": {}})
+    _save_store(repo_root, {"blobs": {}, "_order": []})
     snap_dir = Path(repo_root) / ".vcs_snapshots"
     if snap_dir.exists():
         shutil.rmtree(snap_dir, ignore_errors=True)
+
+
+def gc_store(repo_root: Optional[str] = None, prune_stale: bool = True,
+             prune_duplicates: bool = True) -> dict:
+    """Garbage-collect the registry and snapshot directory.
+
+    Used by `vcs gc` and `vcs status --prune`. Returns a summary dict with
+    counts of what was removed.
+
+    Args:
+        repo_root: repo root (auto-discovered if None)
+        prune_stale: remove registry entries whose filepath no longer exists
+                     on disk (deleted files)
+        prune_duplicates: remove orphan snapshot files that have no
+                          corresponding registry entry (left over from
+                          short-prefix duplicates in v2.0)
+
+    Returns: {"stale_entries": N, "orphan_snapshots": M, "total_remaining": K}
+    """
+    if repo_root is None:
+        repo_root = _find_repo_root()
+    data = _load_store(repo_root)
+    blobs = data.get("blobs", {})
+    order = data.get("_order", [])
+
+    stale_removed = 0
+    if prune_stale:
+        # Find entries whose file no longer exists
+        to_remove = []
+        for h, p in list(blobs.items()):
+            abs_p = p if os.path.isabs(p) else os.path.join(repo_root, p)
+            if not os.path.exists(abs_p):
+                to_remove.append(h)
+        for h in to_remove:
+            blobs.pop(h, None)
+            order = [(hh, p) for (hh, p) in order if hh != h]
+            stale_removed += 1
+        data["_order"] = order
+
+    orphan_removed = 0
+    if prune_duplicates:
+        snap_dir = _snapshots_dir(repo_root)
+        if snap_dir.exists():
+            reg_hashes = set(h.lower() for h in blobs.keys())
+            for snap_file in snap_dir.glob("*.txt"):
+                if snap_file.stem.lower() not in reg_hashes:
+                    try:
+                        snap_file.unlink()
+                        orphan_removed += 1
+                    except OSError:
+                        pass
+
+    _save_store(repo_root, data)
+    return {
+        "stale_entries": stale_removed,
+        "orphan_snapshots": orphan_removed,
+        "total_remaining": len(blobs),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +329,26 @@ def save_snapshot(blob_hash: str, content: str, repo_root: Optional[str] = None)
 
     This lets us reconstruct `base` for 3-way merge even when the file is
     untracked or git's object store doesn't have the blob.
+
+    BUG-4 fix: if `blob_hash` is a short prefix, we look up the matching
+    full hash in the registry and store the snapshot under THAT. This
+    prevents orphan snapshot files when the agent passes a short blob
+    prefix to `vcs replace` (which calls register() with the prefix and
+    then save_snapshot() with the prefix).
     """
     if repo_root is None:
         repo_root = _find_repo_root()
-    snap_path = _snapshots_dir(repo_root) / f"{blob_hash.lower()}.txt"
+    blob_lower = blob_hash.lower()
+
+    # If it's a short prefix, try to resolve to the full hash
+    if len(blob_lower) < 40:
+        data = _load_store(repo_root)
+        for existing_hash in data.get("blobs", {}).keys():
+            if existing_hash.startswith(blob_lower):
+                blob_lower = existing_hash
+                break
+
+    snap_path = _snapshots_dir(repo_root) / f"{blob_lower}.txt"
     with snap_path.open("w", encoding="utf-8", newline="") as fh:
         fh.write(content)
 

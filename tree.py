@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-agy-tree — depth-limited, .gitignore-aware directory tree for AGY
+vcs tree — depth-limited, .gitignore-aware directory tree for the VCS CLI.
 
 Outputs a tree-style view of a directory, respecting .gitignore rules and
-hiding common build/vendor directories by default. Designed to replace the
-"blind list_dir hunt" AGY described in #306.
+hiding common build/vendor directories by default.
 
 Default behavior:
   - Depth: 2 levels
@@ -13,14 +12,23 @@ Default behavior:
     __pycache__, .cache, venv, .venv, .turbo, .parcel-cache, coverage,
     .nuxt, .svelte-kit
   - Hidden directories (those that were filtered) are listed at the bottom
-    with file counts, so the agent knows they exist without seeing contents
+    with file counts, so the agent knows they exist without seeing contents.
   - Tree-style output (NOT JSON) — easier to scan, fewer tokens
 
+Performance optimization (v2):
+  - Directories with 10+ items are NOT recursed into — we just show a summary
+    like `Frontend/ (2 dirs, 8 files)`. This prevents the tree command from
+    spending huge time walking through heavy directories (.git, node_modules
+    even when not in HIDDEN_DIRS, vendor folders, generated folders, etc.).
+  - Hidden directory file counts use a capped, breadth-first counter to avoid
+    recursing into massive sub-trees.
+  - All filesystem walks skip .git-style directories early to avoid stat storms.
+
 Usage:
-  agy-tree <path>                  # default depth 2
-  agy-tree <path> --depth 3        # custom depth
-  agy-tree <path> --all            # show everything (no filtering)
-  agy-tree <path> --hidden-only    # show only the normally-hidden dirs
+  vcs tree <path>                  # default depth 2
+  vcs tree <path> --depth 3        # custom depth
+  vcs tree <path> --all            # show everything (no filtering)
+  vcs tree <path> --hidden-only    # show only the normally-hidden dirs
 
 Exit codes:
   0 = success
@@ -46,18 +54,18 @@ HIDDEN_DIRS = {
     '.gradle',
     '.maven',
     'Pods',  # iOS CocoaPods
+    '.vcs_snapshots',  # VCS-internal snapshot store
 }
 
 # Files we always hide by default.
 HIDDEN_FILES = {
     '.DS_Store', 'Thumbs.db', '.gitignore', '.gitkeep',
+    '.vcs_store.json',  # VCS-internal registry
 }
 
 # Source file extensions — show line counts instead of byte sizes for these.
-# AGY requested line counts because view_file caps at 800 lines.
 # Includes ALL text-based files where line count is meaningful, not just
 # programming languages — configs, markup, data formats, etc.
-# Defined at module level (Gemini review fix — avoids per-file allocation).
 SOURCE_EXTENSIONS = {
     # Programming languages
     '.py', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
@@ -75,15 +83,19 @@ SOURCE_EXTENSIONS = {
     '.vue', '.svelte',
 }
 
+# v2 performance: if a directory has this many direct entries (or more),
+# don't recurse into it — just show a summary line. This is the cap the
+# user asked for ("if any directory files or subfolder touch mark of 10
+# then don't try to Fetch further").
+DIR_ITEM_CAP = 10
+
+# v2 performance: hidden directories often contain thousands of files
+# (node_modules, .git). Cap the recursive file-count walk so we don't hang.
+HIDDEN_DIR_COUNT_CAP = 200
+
 
 def parse_gitignore(directory: Path) -> list:
-    """
-    Parse .gitignore in the given directory. Returns a list of patterns.
-
-    Only handles the most common cases: simple patterns, wildcards, and
-    negation. Doesn't handle nested .gitignore files in subdirs (limitation
-    we accept for v1).
-    """
+    """Parse .gitignore in the given directory. Returns a list of patterns."""
     gitignore = directory / '.gitignore'
     if not gitignore.exists():
         return []
@@ -98,19 +110,7 @@ def parse_gitignore(directory: Path) -> list:
 
 
 def matches_gitignore(rel_path_str: str, is_dir: bool, patterns: list) -> bool:
-    """
-    Check if a relative path matches any gitignore pattern.
-
-    Handles two cases:
-    - Basename matching for simple patterns (e.g. '*.log', 'node_modules')
-    - Relative-to-root matching for patterns with slashes (e.g. 'src/*.log',
-      'config/local.json')
-
-    This is the fix for Gemini's high-priority review comment — the previous
-    version only checked the basename, which broke matching for nested
-    patterns like 'src/*.log'.
-    """
-    # For directory paths, ensure trailing slash for dir-only patterns
+    """Check if a relative path matches any gitignore pattern."""
     path_to_match = rel_path_str + '/' if is_dir and not rel_path_str.endswith('/') else rel_path_str
     basename = path_to_match.rstrip('/').split('/')[-1]
 
@@ -120,27 +120,22 @@ def matches_gitignore(rel_path_str: str, is_dir: bool, patterns: list) -> bool:
             negate = True
             pattern = pattern[1:]
 
-        # Directory-only patterns (ending with /)
         if pattern.endswith('/'):
             if is_dir:
-                # Match against basename or relative path
                 if fnmatch.fnmatch(basename, pattern.rstrip('/')) or \
                    fnmatch.fnmatch(path_to_match, pattern) or \
                    fnmatch.fnmatch(path_to_match.rstrip('/'), pattern.rstrip('/')):
-                    return not negate  # negate=True means un-hide
+                    return not negate
             continue
 
-        # Patterns with slashes → match against relative path
         if '/' in pattern:
             if fnmatch.fnmatch(rel_path_str, pattern) or \
                fnmatch.fnmatch(path_to_match, pattern):
                 return not negate
             continue
 
-        # Simple patterns (no slashes) → match against basename
         if fnmatch.fnmatch(basename, pattern):
             return not negate
-        # Also match against the full relative path (for nested entries)
         if fnmatch.fnmatch(rel_path_str, pattern):
             return not negate
 
@@ -151,45 +146,121 @@ def should_hide(name: str, rel_path_str: str, is_dir: bool, gitignore_patterns: 
     """Decide if a file/dir should be hidden from the tree."""
     if show_all:
         return False
-    # Hidden dirs (hardcoded list) — check basename
     if is_dir and name in HIDDEN_DIRS:
         return True
-    # Hidden files
     if not is_dir and name in HIDDEN_FILES:
         return True
-    # Gitignore — use relative path for proper matching
     if matches_gitignore(rel_path_str, is_dir, gitignore_patterns):
         return True
     return False
 
 
-def count_files_recursive(path: Path, max_depth: int = 5) -> int:
-    """Count files in a directory recursively (capped at max_depth for safety)."""
+def count_files_capped(path: Path, cap: int = HIDDEN_DIR_COUNT_CAP) -> int:
+    """Count files in a directory recursively, stopping early once `cap` is hit.
+
+    Used for the hidden-directory summary at the bottom of the output.
+    Skips other hidden directories to avoid walking node_modules inside
+    node_modules etc.
+
+    Uses breadth-first traversal (deque.popleft) so we hit the cap on the
+    shallow, broad parts of the tree first — gives a more representative
+    count when the cap kicks in. Also refuses to follow symlinks to prevent
+    infinite loops on symlink cycles (e.g. `ln -s .. self_loop`).
+    """
+    from collections import deque
     count = 0
+    queue = deque([path])
+    while queue:
+        current = queue.popleft()
+        try:
+            for entry in current.iterdir():
+                if count >= cap:
+                    return count  # fast exit
+                # Skip symlinks to prevent infinite loops on cycles
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    # Don't descend into nested hidden dirs
+                    if entry.name in HIDDEN_DIRS:
+                        continue
+                    queue.append(entry)
+                else:
+                    count += 1
+        except (PermissionError, OSError):
+            pass
+    return count
+
+
+def _count_direct_children(path: Path) -> tuple[int, int]:
+    """Return (num_dirs, num_files) of direct children of `path`.
+
+    Used for the summary line `Frontend/ (2 dirs, 8 files)`.
+    """
+    n_dirs = 0
+    n_files = 0
     try:
         for entry in path.iterdir():
             if entry.is_dir():
-                if max_depth > 0:
-                    count += count_files_recursive(entry, max_depth - 1)
-                # Don't count the dir itself
+                n_dirs += 1
             else:
-                count += 1
+                n_files += 1
     except (PermissionError, OSError):
         pass
-    return count
+    return n_dirs, n_files
+
+
+def _format_dir_summary(n_dirs: int, n_files: int) -> str:
+    """Format a directory summary line like `Frontend/ (2 dirs, 8 files)`."""
+    parts = []
+    if n_dirs == 1:
+        parts.append("1 dir")
+    elif n_dirs != 0:
+        parts.append(f"{n_dirs} dirs")
+    if n_files == 1:
+        parts.append("1 file")
+    elif n_files != 0:
+        parts.append(f"{n_files} files")
+    if not parts:
+        return "empty"
+    return ", ".join(parts)
+
+
+def _format_file_suffix(entry: Path) -> str:
+    """Return the suffix string for a file entry, e.g. `(45 lines)` or `(2.3 KB)`."""
+    suffix = entry.suffix.lower()
+    if suffix in SOURCE_EXTENSIONS:
+        try:
+            with entry.open('rb') as f:
+                line_count = sum(
+                    chunk.count(b'\n')
+                    for chunk in iter(lambda: f.read(65536), b'')
+                )
+            if line_count > 800:
+                return f"{line_count} lines ⚠"
+            return f"{line_count} lines"
+        except OSError:
+            return "? lines"
+    else:
+        try:
+            size = entry.stat().st_size
+            if size < 1024:
+                return f"{size} B"
+            elif size < 1024 * 1024:
+                return f"{size / 1024:.1f} KB"
+            else:
+                return f"{size / (1024 * 1024):.1f} MB"
+        except OSError:
+            return "?"
 
 
 def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
                gitignore_patterns: list, show_all: bool, prefix: str = '',
                hidden_summary: list = None) -> list:
-    """
-    Recursively build the tree output. Returns a list of formatted strings.
+    """Recursively build the tree output. Returns a list of formatted strings.
 
-    hidden_summary is a list we append (dir_name, file_count) tuples to for
-    the bottom-of-output summary of hidden directories.
-
-    root_path is the original directory passed by the user — we compute
-    relative paths from it for proper .gitignore matching (Gemini fix).
+    v2 optimization: if a directory has DIR_ITEM_CAP (10) or more direct
+    children, we DO NOT recurse into it — we just print a summary line.
+    This is what makes the command fast on big repos.
     """
     if hidden_summary is None:
         hidden_summary = []
@@ -199,13 +270,12 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
 
     try:
         entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
-    except (PermissionError, OSError) as e:
+    except (PermissionError, OSError):
         return [f"{prefix}[permission denied]"]
 
     # Filter entries
     visible = []
     for entry in entries:
-        # Compute relative path from root for gitignore matching
         try:
             rel_path = entry.relative_to(root_path)
             rel_path_str = rel_path.as_posix()
@@ -214,26 +284,38 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
 
         if should_hide(entry.name, rel_path_str, entry.is_dir(), gitignore_patterns, show_all):
             if entry.is_dir():
-                # Add to hidden summary
-                file_count = count_files_recursive(entry)
+                # Add to hidden summary — use capped counter to avoid walking node_modules
+                file_count = count_files_capped(entry)
                 hidden_summary.append((entry.name, file_count))
             continue
         visible.append(entry)
 
     if not visible and current_depth > 1:
-        # Don't show empty dirs at depth > 1 (they clutter output)
         return []
 
     lines = []
+    n_visible = len(visible)
+
+    # v2 cap logic: we ALWAYS list all immediate children of the current
+    # directory (the user explicitly asked to see this folder). The cap
+    # decides whether to RECURSE INTO each child directory based on the
+    # child's own item count — not the parent's. This was the bug pointed
+    # out by both Gemini and AGY reviewers: the previous code used the
+    # parent's n_visible, which both skipped empty subdirs (when parent
+    # was big) AND recursed into huge subdirs (when parent was small).
     for i, entry in enumerate(visible):
-        is_last = (i == len(visible) - 1)
+        is_last = (i == n_visible - 1)
         connector = '└── ' if is_last else '├── '
         if entry.is_dir():
-            # Recurse into subdirectory
-            child_count = sum(1 for _ in entry.iterdir())
-            lines.append(f"{prefix}{connector}{entry.name}/  ({child_count} items)")
-            if current_depth < max_depth:
-                # Recurse with extended prefix
+            # Compute direct child counts for the summary line
+            n_dirs, n_files = _count_direct_children(entry)
+            summary = _format_dir_summary(n_dirs, n_files)
+            lines.append(f"{prefix}{connector}{entry.name}/  ({summary})")
+
+            # v2: skip recursion if THIS subdirectory has too many items
+            # OR we're already at max depth
+            child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
+            if current_depth < max_depth and not child_too_many:
                 extension = '    ' if is_last else '│   '
                 sub_lines = build_tree(
                     entry, root_path, current_depth + 1, max_depth,
@@ -241,80 +323,23 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
                     prefix + extension, hidden_summary
                 )
                 lines.extend(sub_lines)
+            elif child_too_many and current_depth < max_depth:
+                # Indicate that we skipped recursion for performance
+                ext = '    ' if is_last else '│   '
+                lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
         else:
-            # File — show name + line count (for source files) or size (for others)
-            # AGY requested line counts because view_file caps at 800 lines —
-            # knowing the count in advance tells AGY if it needs agy-skeleton.
-            suffix = entry.suffix.lower()
-            if suffix in SOURCE_EXTENSIONS:
-                # Show line count for source files.
-                # Read in binary chunks and count newlines — much faster than
-                # decoding line-by-line, and avoids hanging on massive generated
-                # files (Gemini + AGY review fix).
-                # Uses `with` context manager to prevent file descriptor leaks
-                # (AGY review fix).
-                try:
-                    with entry.open('rb') as f:
-                        line_count = sum(
-                            chunk.count(b'\n')
-                            for chunk in iter(lambda: f.read(65536), b'')
-                        )
-                    if line_count > 800:
-                        size_str = f"{line_count} lines ⚠"  # warning: exceeds view_file limit
-                    else:
-                        size_str = f"{line_count} lines"
-                except OSError:
-                    size_str = "? lines"
-            else:
-                # Show byte size for non-source files (configs, JSON, etc.)
-                try:
-                    size = entry.stat().st_size
-                    if size < 1024:
-                        size_str = f"{size} B"
-                    elif size < 1024 * 1024:
-                        size_str = f"{size / 1024:.1f} KB"
-                    else:
-                        size_str = f"{size / (1024 * 1024):.1f} MB"
-                except OSError:
-                    size_str = "?"
+            size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
 
     return lines
 
 
-def _dir_contains_matching_files(path: Path, filter_pattern: str, max_depth: int = 10) -> bool:
-    """
-    Check if a directory (recursively) contains any file matching the glob
-    pattern. Used by build_tree_filtered to decide whether to show a branch.
-    Capped at max_depth for safety.
-    """
-    import fnmatch as fnm
-    try:
-        for entry in path.iterdir():
-            # Skip hidden dirs/files to avoid scanning node_modules/.git/etc
-            # (Gemini + AGY review fix — performance + correctness)
-            if entry.name in HIDDEN_DIRS or entry.name in HIDDEN_FILES:
-                continue
-            if entry.is_dir():
-                if max_depth > 0 and _dir_contains_matching_files(entry, filter_pattern, max_depth - 1):
-                    return True
-            else:
-                if fnm.fnmatch(entry.name, filter_pattern):
-                    return True
-    except (PermissionError, OSError):
-        pass
-    return False
-
-
 def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_depth: int,
                         gitignore_patterns: list, show_all: bool, filter_pattern: str,
                         prefix: str = '', hidden_summary: list = None) -> list:
+    """Build a filtered tree — only shows directories that contain files matching
+    the filter_pattern, and the matching files themselves.
     """
-    Build a filtered tree — only shows directories that contain files matching
-    the filter_pattern, and the matching files themselves. Prunes branches
-    with no matching files. (AGY V2 request — monorepo navigation)
-    """
-    import fnmatch as fnm
     if hidden_summary is None:
         hidden_summary = []
 
@@ -326,7 +351,6 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
     except (PermissionError, OSError):
         return [f"{prefix}[permission denied]"]
 
-    # Filter entries
     visible = []
     for entry in entries:
         try:
@@ -337,34 +361,34 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
 
         if should_hide(entry.name, rel_path_str, entry.is_dir(), gitignore_patterns, show_all):
             if entry.is_dir():
-                file_count = count_files_recursive(entry)
+                file_count = count_files_capped(entry)
                 hidden_summary.append((entry.name, file_count))
             continue
 
         if entry.is_dir():
-            # Only include this directory if it contains matching files
             if _dir_contains_matching_files(entry, filter_pattern):
                 visible.append(entry)
         else:
-            # Only include this file if it matches the filter
-            if fnm.fnmatch(entry.name, filter_pattern):
+            if fnmatch.fnmatch(entry.name, filter_pattern):
                 visible.append(entry)
 
     if not visible:
         return []
 
     lines = []
+    n_visible = len(visible)
+
+    # v2 cap logic: same as build_tree — base the cap on the CHILD's own
+    # item count, not the parent's. See build_tree for the full rationale.
     for i, entry in enumerate(visible):
-        is_last = (i == len(visible) - 1)
+        is_last = (i == n_visible - 1)
         connector = '└── ' if is_last else '├── '
         if entry.is_dir():
-            try:
-                child_count = sum(1 for _ in entry.iterdir())
-                child_count_str = f"{child_count} items"
-            except (PermissionError, OSError):
-                child_count_str = "? items"
-            lines.append(f"{prefix}{connector}{entry.name}/  ({child_count_str})")
-            if current_depth < max_depth:
+            n_dirs, n_files = _count_direct_children(entry)
+            summary = _format_dir_summary(n_dirs, n_files)
+            lines.append(f"{prefix}{connector}{entry.name}/  ({summary})")
+            child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
+            if current_depth < max_depth and not child_too_many:
                 extension = '    ' if is_last else '│   '
                 sub_lines = build_tree_filtered(
                     entry, root_path, current_depth + 1, max_depth,
@@ -372,41 +396,36 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
                     prefix + extension, hidden_summary
                 )
                 lines.extend(sub_lines)
+            elif child_too_many and current_depth < max_depth:
+                ext = '    ' if is_last else '│   '
+                lines.append(f"{prefix}{ext}└── … (capped at {DIR_ITEM_CAP} items, use `vcs tree {entry}` to expand)")
         else:
-            # File — show name + line count/size
-            suffix = entry.suffix.lower()
-            if suffix in SOURCE_EXTENSIONS:
-                try:
-                    with entry.open('rb') as f:
-                        line_count = sum(
-                            chunk.count(b'\n')
-                            for chunk in iter(lambda: f.read(65536), b'')
-                        )
-                    if line_count > 800:
-                        size_str = f"{line_count} lines ⚠"
-                    else:
-                        size_str = f"{line_count} lines"
-                except OSError:
-                    size_str = "? lines"
-            else:
-                try:
-                    size = entry.stat().st_size
-                    if size < 1024:
-                        size_str = f"{size} B"
-                    elif size < 1024 * 1024:
-                        size_str = f"{size / 1024:.1f} KB"
-                    else:
-                        size_str = f"{size / (1024 * 1024):.1f} MB"
-                except OSError:
-                    size_str = "?"
+            size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
 
     return lines
 
 
+def _dir_contains_matching_files(path: Path, filter_pattern: str, max_depth: int = 10) -> bool:
+    """Check if a directory (recursively) contains any file matching the glob."""
+    try:
+        for entry in path.iterdir():
+            if entry.name in HIDDEN_DIRS or entry.name in HIDDEN_FILES:
+                continue
+            if entry.is_dir():
+                if max_depth > 0 and _dir_contains_matching_files(entry, filter_pattern, max_depth - 1):
+                    return True
+            else:
+                if fnmatch.fnmatch(entry.name, filter_pattern):
+                    return True
+    except (PermissionError, OSError):
+        pass
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="AGY directory tree generator — depth-limited, .gitignore-aware."
+        description="vcs tree — depth-limited, .gitignore-aware directory tree."
     )
     parser.add_argument('path', nargs='?', default='.', help='Directory to tree')
     parser.add_argument('--depth', type=int, default=2,
@@ -430,17 +449,15 @@ def main():
     gitignore_patterns = parse_gitignore(path) if not args.all else []
 
     if args.hidden_only:
-        # Just list the hidden dirs with counts
         hidden = []
         try:
             for entry in sorted(path.iterdir(), key=lambda e: e.name.lower()):
-                # Compute relative path for gitignore matching
                 try:
                     rel_path_str = entry.relative_to(path).as_posix()
                 except ValueError:
                     rel_path_str = entry.name
                 if entry.is_dir() and should_hide(entry.name, rel_path_str, True, gitignore_patterns, False):
-                    file_count = count_files_recursive(entry)
+                    file_count = count_files_capped(entry)
                     hidden.append(f"{entry.name}/  [{file_count} files]")
         except (PermissionError, OSError):
             pass
@@ -452,14 +469,9 @@ def main():
             print(f"No hidden directories in {path}.")
         return
 
-    # Build the tree — pass `path` as root_path so we can compute relative
-    # paths for proper .gitignore matching (Gemini fix).
     hidden_summary = []
 
     if args.filter:
-        # Filter mode: only show paths leading to files matching the glob.
-        # Uses a recursive walk that prunes branches with no matching files.
-        import fnmatch as fnm
         tree_lines = build_tree_filtered(
             path, root_path=path, current_depth=1, max_depth=args.depth,
             gitignore_patterns=gitignore_patterns, show_all=args.all,
@@ -474,7 +486,6 @@ def main():
 
     # Header
     abs_path = path.resolve()
-    visible_count = len([l for l in tree_lines if l and not l.startswith(' ') or l.strip().startswith(('├', '└'))])
     print(f"{abs_path}")
     print()
 
@@ -490,12 +501,12 @@ def main():
         for name, count in hidden_summary:
             print(f"  {name}/  [{count} files]")
 
-    # Footer
+    # Footer — uses `vcs tree` (was previously `agy-tree`)
     print("---")
     if args.depth > 1:
-        print(f"Use `agy-tree <subdir>` to expand any directory above (depth={args.depth}).")
+        print(f"Use `vcs tree <subdir>` to expand any directory above (depth={args.depth}).")
     else:
-        print(f"Use `agy-tree <subdir>` to expand any directory above.")
+        print(f"Use `vcs tree <subdir>` to expand any directory above.")
 
 
 if __name__ == '__main__':
