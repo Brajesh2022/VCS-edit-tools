@@ -255,7 +255,7 @@ def _format_file_suffix(entry: Path) -> str:
 
 def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
                gitignore_patterns: list, show_all: bool, prefix: str = '',
-               hidden_summary: list = None) -> list:
+               hidden_summary: list = None, ai_format: bool = False) -> list:
     """Recursively build the tree output. Returns a list of formatted strings.
 
     v2 optimization: if a directory has DIR_ITEM_CAP (10) or more direct
@@ -305,7 +305,7 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
     # was big) AND recursed into huge subdirs (when parent was small).
     for i, entry in enumerate(visible):
         is_last = (i == n_visible - 1)
-        connector = '└── ' if is_last else '├── '
+        connector = '' if ai_format else ('└── ' if is_last else '├── ')
         if entry.is_dir():
             # Compute direct child counts for the summary line
             n_dirs, n_files = _count_direct_children(entry)
@@ -316,17 +316,18 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
             # OR we're already at max depth
             child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
             if current_depth < max_depth and not child_too_many:
-                extension = '    ' if is_last else '│   '
+                extension = '  ' if ai_format else ('    ' if is_last else '│   ')
                 sub_lines = build_tree(
                     entry, root_path, current_depth + 1, max_depth,
                     gitignore_patterns, show_all,
-                    prefix + extension, hidden_summary
+                    prefix + extension, hidden_summary, ai_format
                 )
                 lines.extend(sub_lines)
             elif child_too_many and current_depth < max_depth:
                 # Indicate that we skipped recursion for performance
-                ext = '    ' if is_last else '│   '
-                lines.append(f"{prefix}{ext}└── … (many items)")
+                ext = '  ' if ai_format else ('    ' if is_last else '│   ')
+                cap_conn = '' if ai_format else '└── '
+                lines.append(f"{prefix}{ext}{cap_conn}… (many items)")
         else:
             size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
@@ -336,7 +337,7 @@ def build_tree(path: Path, root_path: Path, current_depth: int, max_depth: int,
 
 def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_depth: int,
                         gitignore_patterns: list, show_all: bool, filter_pattern: str,
-                        prefix: str = '', hidden_summary: list = None) -> list:
+                        prefix: str = '', hidden_summary: list = None, ai_format: bool = False) -> list:
     """Build a filtered tree — only shows directories that contain files matching
     the filter_pattern, and the matching files themselves.
     """
@@ -382,23 +383,24 @@ def build_tree_filtered(path: Path, root_path: Path, current_depth: int, max_dep
     # item count, not the parent's. See build_tree for the full rationale.
     for i, entry in enumerate(visible):
         is_last = (i == n_visible - 1)
-        connector = '└── ' if is_last else '├── '
+        connector = '' if ai_format else ('└── ' if is_last else '├── ')
         if entry.is_dir():
             n_dirs, n_files = _count_direct_children(entry)
             summary = _format_dir_summary(n_dirs, n_files)
             lines.append(f"{prefix}{connector}{entry.name}/  ({summary})")
             child_too_many = (n_dirs + n_files) >= DIR_ITEM_CAP
             if current_depth < max_depth and not child_too_many:
-                extension = '    ' if is_last else '│   '
+                extension = '  ' if ai_format else ('    ' if is_last else '│   ')
                 sub_lines = build_tree_filtered(
                     entry, root_path, current_depth + 1, max_depth,
                     gitignore_patterns, show_all, filter_pattern,
-                    prefix + extension, hidden_summary
+                    prefix + extension, hidden_summary, ai_format
                 )
                 lines.extend(sub_lines)
             elif child_too_many and current_depth < max_depth:
-                ext = '    ' if is_last else '│   '
-                lines.append(f"{prefix}{ext}└── … (many items)")
+                ext = '  ' if ai_format else ('    ' if is_last else '│   ')
+                cap_conn = '' if ai_format else '└── '
+                lines.append(f"{prefix}{ext}{cap_conn}… (many items)")
         else:
             size_str = _format_file_suffix(entry)
             lines.append(f"{prefix}{connector}{entry.name}  ({size_str})")
@@ -436,6 +438,8 @@ def main():
                         help='Show only the normally-hidden directories (with counts)')
     parser.add_argument('--filter', type=str, default=None,
                         help='Glob filter — only show paths leading to matching files (e.g. "*.jsx")')
+    parser.add_argument('--ai', action='store_true',
+                        help='Use an AI-optimized flat format without Unicode connectors')
     args = parser.parse_args()
 
     path = Path(args.path)
@@ -475,13 +479,14 @@ def main():
         tree_lines = build_tree_filtered(
             path, root_path=path, current_depth=1, max_depth=args.depth,
             gitignore_patterns=gitignore_patterns, show_all=args.all,
-            filter_pattern=args.filter, prefix='', hidden_summary=hidden_summary
+            filter_pattern=args.filter, prefix='', hidden_summary=hidden_summary,
+            ai_format=args.ai
         )
     else:
         tree_lines = build_tree(
             path, root_path=path, current_depth=1, max_depth=args.depth,
             gitignore_patterns=gitignore_patterns, show_all=args.all,
-            hidden_summary=hidden_summary
+            hidden_summary=hidden_summary, ai_format=args.ai
         )
 
     # Header

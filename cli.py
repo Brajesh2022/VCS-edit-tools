@@ -888,7 +888,7 @@ def cmd_skeleton(args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_tree(args: list[str]) -> None:
-    """vcs tree [path] [--depth N] [--all]"""
+    """vcs tree [path] [--depth N] [--all] [--ai]"""
     script = os.path.join(SCRIPT_DIR, "tree.py")
     if not os.path.exists(script):
         _error("tree.py not found")
