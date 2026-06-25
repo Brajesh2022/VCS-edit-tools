@@ -289,7 +289,7 @@ def build_list(path: Path, root_path: Path, current_depth: int, max_depth: int,
 
     lines = []
     for entry in visible:
-        if entry.is_dir():
+        if entry.is_dir() and not entry.is_symlink():
             n_dirs, n_files = _count_direct_children(entry)
             summary = _format_dir_summary(n_dirs, n_files)
             lines.append(f"{prefix}{entry.name}/  ({summary})")
