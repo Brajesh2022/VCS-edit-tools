@@ -10,7 +10,7 @@ DELETE:    vcs delete <filepath> [<blob> <start-end>]       (omit blob+range to 
 CREATE:    vcs create <filepath> << 'EOF' ... EOF           (new file with content)
 BATCH:     vcs batch << 'EOF'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF
 DIFF:      vcs diff <filepath> <blob>
-SKELETON:  vcs skeleton <filepath> [start-end]              (structural view)
+SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
 TREE:      vcs tree [path] [--depth N] [--all]              (Prioritise over ls or list tools)
 GREP:      vcs grep <query> [path] [-i]
 FMT:       vcs fmt [--check] [path]                        (auto-format code syntax)
