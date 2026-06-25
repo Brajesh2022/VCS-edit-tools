@@ -321,7 +321,7 @@ def cmd_read(args: list[str]) -> None:
     blob = _short_blob(result.get("blob", ""))
 
     # Rich output
-    print(f"blob: {blob} (Use this for any further edits, no need to read again)")
+    print(f"blob: {blob}")
     print(f"path: {result.get('path', filepath)}")
     shown_range = result.get("shown_range", "")
     if shown_range == "skeleton":
@@ -876,7 +876,7 @@ def cmd_skeleton(args: list[str]) -> None:
     end = r_end if r_end is not None else total_lines
 
     blob = _short_blob(blob_hash)
-    print(f"blob: {blob} (Use this for any further edits, no need to read again)")
+    print(f"blob: {blob}")
     print(f"path: {filepath}")
     print(f"Code Lines: {start} to {end}")
     print("---")
