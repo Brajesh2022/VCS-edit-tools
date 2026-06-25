@@ -199,11 +199,11 @@ if [[ "$OUT" == *"2.1.0"* ]]; then ok "--version works (v2.1.0)"; else no "--ver
 OUT=$($VCS --help 2>&1)
 if echo "$OUT" | grep -q "read" && echo "$OUT" | grep -q "replace" && echo "$OUT" | grep -q "create"; then ok "--help lists commands (incl. create)"; else no "--help" "out=$OUT"; fi
 
-# ---------- Test 16: tree command does NOT mention 'agy-tree' ----------
+# ---------- Test 16: tree command does NOT mention 'agy-list' ----------
 mkdir -p subdir
 echo "x" > subdir/file.txt
 OUT=$($VCS tree . --depth 1 2>&1)
-if [[ "$OUT" != *"agy-tree"* && "$OUT" == *"vcs tree"* ]]; then ok "tree uses 'vcs tree' (not agy-tree)"; else no "tree naming" "out=$OUT"; fi
+if [[ "$OUT" != *"agy-list"* && "$OUT" == *"vcs list"* ]]; then ok "tree uses 'vcs list' (not agy-list)"; else no "tree naming" "out=$OUT"; fi
 
 # ---------- Test 17 (v2.1): vcs read refuses binary files ----------
 printf "text\x00binary\n" > _e2e_binary.bin

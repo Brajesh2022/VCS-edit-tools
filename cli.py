@@ -14,7 +14,7 @@ Commands:
     vcs batch << 'EOF' [...json...] EOF
     vcs diff <filepath> <blob>
     vcs skeleton <filepath> [start-end]
-    vcs tree [path] [--depth N] [--all]
+    vcs list [path] [--depth N] [--all]
     vcs grep <query> [path] [-i] [-r]
     vcs fmt [--check] [path]
     vcs test <command> [path]
