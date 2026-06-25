@@ -571,7 +571,7 @@ def test_status(tmp_repo):
 def test_version():
     code, out, err = _run(["--version"])
     assert code == 0
-    assert "2.0.0" in out
+    assert "2.1.0" in out
 
 
 def test_help_lists_commands():
@@ -638,3 +638,387 @@ def test_dollar_sign_safety(tmp_repo):
     assert "$DOLLAR" in f.read_text()
     assert "${CURLY}" in f.read_text()
     assert "$(sub)" in f.read_text()
+
+
+# ===========================================================================
+# v2.1 fixes — regression tests for field-test report bugs and optimizations
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# BUG-2: binary file detection in vcs read
+# ---------------------------------------------------------------------------
+
+def test_read_refuses_binary_file_with_null_bytes(tmp_repo):
+    """BUG-2: vcs read on a file containing NUL bytes must error cleanly,
+    NOT dump garbled bytes to stdout.
+    """
+    f = tmp_repo / "binary.bin"
+    # Write 100 bytes of binary data with a guaranteed NUL byte in the middle
+    import os as _os
+    with open(f, "wb") as fh:
+        fh.write(b"some text\nwith a NUL byte here:\x00\x01\x02\x03 and more\n")
+    code, out, err = _run(["read", str(f)])
+    assert code == 2
+    assert "binary" in err.lower() or "binary" in out.lower()
+    # Crucially, the output must NOT contain the raw bytes (which would
+    # show up as garbled characters). The error message is a clean string.
+    assert "file appears to be binary" in err.lower() or "file appears to be binary" in out.lower()
+
+
+def test_read_refuses_binary_png_file(tmp_repo):
+    """BUG-2: PNG files start with 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A
+    and contain NUL bytes later. Should be detected as binary.
+    """
+    f = tmp_repo / "image.png"
+    png_header = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"\x00" * 50
+    with open(f, "wb") as fh:
+        fh.write(png_header)
+    code, out, err = _run(["read", str(f)])
+    assert code == 2
+    assert "binary" in err.lower() or "binary" in out.lower()
+
+
+def test_read_still_works_on_utf8_with_multibyte_chars(tmp_repo):
+    """BUG-2 regression: make sure UTF-8 files with multibyte chars (which
+    have bytes in 0x80-0xFF range) are NOT falsely detected as binary.
+    """
+    f = tmp_repo / "utf8.txt"
+    f.write_text("Hello 世界 🌍 café\n" * 10, encoding="utf-8")
+    code, out, err = _run(["read", str(f)])
+    assert code == 0
+    assert "世界" in out
+    assert "café" in out
+
+
+def test_read_still_works_on_empty_file(tmp_repo):
+    """BUG-2 regression: empty files should be treated as text (not binary)."""
+    f = tmp_repo / "empty.txt"
+    f.write_text("")
+    code, out, err = _run(["read", str(f)])
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# BUG-3: distinguish blob-mismatch cases (never-issued / wrong-file / conflict)
+# ---------------------------------------------------------------------------
+
+def test_replace_with_completely_fake_blob_gives_never_issued_error(tmp_repo):
+    """BUG-3 case (a): a blob that was never issued by `vcs read` should
+    produce a 'never issued' error, NOT a generic 'Merge conflict detected'
+    message. The agent needs to know it should re-read, not just retry.
+    """
+    f = tmp_repo / "a.txt"
+    f.write_text("a\nb\nc\n")
+    # Don't call vcs read first — just try to use a fake blob
+    code, out, err = _run(["replace", str(f), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "1-1"],
+                          input_data="X\n")
+    assert code == 2  # error, NOT 1 (conflict)
+    assert "never issued" in err.lower() or "never issued" in out.lower()
+    # Crucially, must NOT say "Merge conflict detected"
+    assert "merge conflict" not in err.lower() and "merge conflict" not in out.lower()
+    # File must be unchanged
+    assert f.read_text() == "a\nb\nc\n"
+
+
+def test_replace_with_blob_from_different_file_gives_wrong_file_error(tmp_repo):
+    """BUG-3 case (b): using a blob from file A to edit file B should
+    produce a 'wrong file' error pointing at the original file, NOT a
+    generic conflict message.
+    """
+    file_a = tmp_repo / "a.txt"
+    file_a.write_text("content of A\n")
+    blob_a = _read_and_get_blob(file_a)
+
+    file_b = tmp_repo / "b.txt"
+    file_b.write_text("content of B\n")
+
+    code, out, err = _run(["replace", str(file_b), blob_a, "1-1"], input_data="X\n")
+    assert code == 2  # error, NOT 1 (conflict)
+    # Should mention "wrong file" or "issued for" with the original filename
+    combined = (err + out).lower()
+    assert "issued for" in combined or "wrong file" in combined
+    assert "a.txt" in combined  # should reference the original file
+    # Must NOT say "Merge conflict detected"
+    assert "merge conflict" not in combined
+    # File B must be unchanged
+    assert file_b.read_text() == "content of B\n"
+
+
+def test_replace_with_stale_blob_for_same_file_still_returns_conflict(tmp_repo):
+    """BUG-3 case (c): genuine concurrent modification (file was read, then
+    externally modified) should STILL return the conflict message. This is
+    the one case where 'Merge conflict detected' IS the right message.
+    """
+    f = tmp_repo / "a.txt"
+    f.write_text("a\nb\nc\nd\ne\n")
+    blob = _read_and_get_blob(f)
+    # Simulate external modification to lines 3-4 (inside agent's edit range)
+    f.write_text("a\nb\nCC!\nd\ne\n")
+    code, out, err = _run(["replace", str(f), blob, "3-4"], input_data="X\nY\n")
+    assert code == 1  # conflict
+    assert "merge conflict" in (out + err).lower()
+
+
+# ---------------------------------------------------------------------------
+# BUG-4: registry growth + keep only last N=100 blobs per file
+# ---------------------------------------------------------------------------
+
+def test_register_caps_blobs_per_file_at_100(tmp_repo):
+    """BUG-4: after more than 100 blobs are registered for the same file,
+    the oldest ones should be pruned. The registry should never have more
+    than MAX_BLOBS_PER_FILE entries for a single filepath.
+    """
+    import sys
+    sys.path.insert(0, str(tmp_repo.parent))  # ensure imports work
+    from core.store import register, _load_store, MAX_BLOBS_PER_FILE, _find_repo_root
+
+    f = tmp_repo / "many_blobs.txt"
+    f.write_text("initial\n")
+
+    # Register 110 different blob hashes for the same file (simulating 110
+    # successive edits, each creating a new blob)
+    repo_root = _find_repo_root(str(tmp_repo))
+    for i in range(110):
+        fake_hash = f"{'a' * 39}{i:01x}"[-40:]  # 40-char hex hash, unique per i
+        register(fake_hash, str(f), repo_root=repo_root)
+
+    data = _load_store(repo_root)
+    blobs_for_file = [h for h, p in data["blobs"].items() if p == "many_blobs.txt"]
+    assert len(blobs_for_file) <= MAX_BLOBS_PER_FILE, (
+        f"expected <= {MAX_BLOBS_PER_FILE} blobs for the file, got {len(blobs_for_file)}"
+    )
+
+
+def test_register_does_not_store_short_prefix_as_separate_key(tmp_repo):
+    """BUG-4 finding #4: registering a short prefix AND then the full hash
+    should NOT result in two separate keys. The second call should
+    consolidate to the full hash, removing the short prefix entry.
+    """
+    from core.store import register, _load_store, _find_repo_root
+
+    f = tmp_repo / "short.txt"
+    f.write_text("content\n")
+    repo_root = _find_repo_root(str(tmp_repo))
+
+    full_hash = "abcdef1234567890abcdef1234567890abcdef12"  # 40 chars
+    short_prefix = full_hash[:8]
+
+    # Step 1: register the short prefix (simulates agent passing short blob)
+    register(short_prefix, str(f), repo_root=repo_root)
+    data_after_short = _load_store(repo_root)
+    # Short prefix is stored (no full hash known yet — this is correct)
+    assert short_prefix in data_after_short["blobs"]
+
+    # Step 2: register the full hash (simulates vcs read registering the
+    # full hash for the same file)
+    register(full_hash, str(f), repo_root=repo_root)
+    data_after_full = _load_store(repo_root)
+    # Full hash should be present
+    assert full_hash in data_after_full["blobs"]
+    # The short prefix may still be present (it's not auto-removed) BUT
+    # when we now register the short prefix AGAIN, it should resolve to
+    # the full hash and NOT create a duplicate.
+    register(short_prefix, str(f), repo_root=repo_root)
+    data_after_reregister = _load_store(repo_root)
+    # The short prefix should NOT have been added as a new key — it should
+    # have resolved to the existing full hash.
+    short_count = sum(1 for h in data_after_reregister["blobs"].keys()
+                      if h == short_prefix)
+    assert short_count == 0, (
+        f"short prefix '{short_prefix}' was stored as a separate key even "
+        f"though a matching full hash '{full_hash}' exists — this is the "
+        f"v2.0 duplicate bug (BUG-4 finding #4)"
+    )
+
+
+def test_deleted_files_get_pruned_by_gc(tmp_repo):
+    """BUG-4 + OPT-3: `vcs gc` should remove registry entries for files
+    that no longer exist on disk.
+    """
+    from core.store import register, _load_store, gc_store, _find_repo_root
+
+    # Create + register a file
+    f = tmp_repo / "doomed.txt"
+    f.write_text("about to be deleted\n")
+    blob = _read_and_get_blob(f)  # registers via read_file
+
+    # Verify it's in the registry
+    repo_root = _find_repo_root(str(tmp_repo))
+    data_before = _load_store(repo_root)
+    assert any(p == "doomed.txt" for p in data_before["blobs"].values())
+
+    # Delete the file externally
+    f.unlink()
+    assert not f.exists()
+
+    # Run gc
+    result = gc_store(repo_root=repo_root)
+    assert result["stale_entries"] >= 1
+
+    # Verify the entry is gone
+    data_after = _load_store(repo_root)
+    assert not any(p == "doomed.txt" for p in data_after["blobs"].values())
+
+
+def test_gc_removes_orphan_snapshots(tmp_repo):
+    """BUG-4 + OPT-3: `vcs gc` should remove orphan snapshot files (those
+    with no corresponding registry entry).
+    """
+    from core.store import _snapshots_dir, gc_store, _find_repo_root
+
+    repo_root = _find_repo_root(str(tmp_repo))
+    snap_dir = _snapshots_dir(repo_root)
+
+    # Create an orphan snapshot file (no registry entry for it)
+    orphan = snap_dir / "orphanhash1234567890orphanhash1234567890orphanhash12.txt"
+    orphan.write_text("orphan content")
+
+    assert orphan.exists()
+    result = gc_store(repo_root=repo_root)
+    assert result["orphan_snapshots"] >= 1
+    assert not orphan.exists()
+
+
+def test_vcs_gc_command_works_via_cli(tmp_repo):
+    """OPT-3: `vcs gc` should be invocable from the CLI and print a summary."""
+    f = tmp_repo / "deleted_via_cli.txt"
+    f.write_text("temp\n")
+    _read_and_get_blob(f)
+    f.unlink()  # simulate external deletion
+
+    code, out, err = _run(["gc"])
+    assert code == 0
+    assert "pruned" in out.lower()
+    assert "stale" in out.lower()
+
+
+def test_vcs_status_prune_flag_works_via_cli(tmp_repo):
+    """OPT-3: `vcs status --prune` should prune stale entries then list."""
+    f = tmp_repo / "prune_me.txt"
+    f.write_text("temp\n")
+    _read_and_get_blob(f)
+    f.unlink()
+
+    code, out, err = _run(["status", "--prune"])
+    assert code == 0
+    assert "pruned" in out.lower()
+    # After pruning, the deleted file should not appear in the listing
+    assert "prune_me.txt" not in out
+
+
+# ---------------------------------------------------------------------------
+# OPT-1: skeleton in-process (no subprocess)
+# ---------------------------------------------------------------------------
+
+def test_skeleton_still_works_after_opt1_refactor(tmp_repo):
+    """OPT-1 regression: after switching skeleton from subprocess to in-process
+    import, the basic skeleton command must still produce the same output.
+    """
+    f = tmp_repo / "test.py"
+    f.write_text("def foo():\n    pass\n\ndef bar():\n    pass\n")
+    code, out, err = _run(["skeleton", str(f)])
+    assert code == 0
+    assert "blob:" in out
+    assert "def foo" in out
+    assert "def bar" in out
+
+
+def test_skeleton_with_range_still_works(tmp_repo):
+    """OPT-1 regression: --start/--end range filtering must still work."""
+    f = tmp_repo / "test.py"
+    f.write_text("\n".join([
+        "def func_a():",
+        "    pass",
+        "def func_b():",
+        "    pass",
+        "def func_c():",
+        "    pass",
+    ]))
+    code, out, err = _run(["skeleton", str(f), "3-5"])
+    assert code == 0
+    assert "func_b" in out
+    assert "func_c" in out
+
+
+def test_skeleton_refuses_binary_file(tmp_repo):
+    """OPT-1 regression: binary file detection in skeleton must still work
+    after the refactor (it's now done via the in-process generate_skeleton)."""
+    f = tmp_repo / "binary.bin"
+    with open(f, "wb") as fh:
+        fh.write(b"\x00" * 100)
+    code, out, err = _run(["skeleton", str(f)])
+    assert code == 2
+
+
+def test_skeleton_is_faster_than_read_or_comparable(tmp_repo):
+    """OPT-1 perf: skeleton should now be at most ~1.5x the time of read
+    (previously it was ~1.6x because of subprocess overhead). This is a
+    soft perf assertion — we just check it completes in reasonable time.
+    """
+    import time
+    f = tmp_repo / "big.py"
+    f.write_text("\n".join([f"def func_{i}():\n    pass" for i in range(300)]))
+
+    # Warm up (load skeleton module, populate cache)
+    _run(["skeleton", str(f)])
+
+    # Time 5 calls
+    start = time.time()
+    for _ in range(5):
+        _run(["skeleton", str(f)])
+    elapsed = time.time() - start
+    # Should average <500ms per call (was ~190ms in v2.0; should be similar
+    # or better now without subprocess overhead). 500ms is a generous upper
+    # bound that won't flake on slow CI.
+    assert elapsed < 2.5, f"5 skeleton calls took {elapsed:.2f}s — too slow"
+
+
+# ---------------------------------------------------------------------------
+# OPT-4: trailing newline on read if missing
+# ---------------------------------------------------------------------------
+
+def test_read_adds_trailing_newline_for_display(tmp_repo):
+    """OPT-4: a file without a trailing newline should still produce clean
+    output (last line followed by newline) so the shell prompt doesn't
+    merge with the last line in terminal output.
+    """
+    f = tmp_repo / "no_newline.txt"
+    # Write content with NO trailing newline
+    with open(f, "w") as fh:
+        fh.write("line1\nline2\nline3")  # no \n at end
+    code, out, err = _run(["read", str(f)])
+    assert code == 0
+    # The output should end with a newline (so the shell prompt doesn't
+    # merge with "line3")
+    assert out.endswith("\n"), "output should end with newline for clean terminal display"
+    # All three lines should be visible with their line numbers
+    assert "1: line1" in out
+    assert "2: line2" in out
+    assert "3: line3" in out
+
+
+def test_read_does_not_modify_file_without_trailing_newline(tmp_repo):
+    """OPT-4 regression: the on-disk file must NOT be modified — we only
+    add a newline to the DISPLAYED content, not the file itself.
+    """
+    f = tmp_repo / "no_newline.txt"
+    with open(f, "w") as fh:
+        fh.write("line1\nline2\nline3")  # no \n at end
+    _run(["read", str(f)])
+    # File on disk must still have NO trailing newline
+    with open(f, "rb") as fh:
+        content = fh.read()
+    assert not content.endswith(b"\n"), "file on disk must not be modified by vcs read"
+
+
+def test_read_preserves_trailing_newline_if_present(tmp_repo):
+    """OPT-4 regression: if the file already has a trailing newline, behavior
+    is unchanged — we don't add an extra one."""
+    f = tmp_repo / "with_newline.txt"
+    f.write_text("line1\nline2\n")  # already has trailing \n
+    code, out, err = _run(["read", str(f)])
+    assert code == 0
+    # Should end with exactly one newline (not two)
+    assert out.endswith("\n")
+    assert not out.endswith("\n\n")
+

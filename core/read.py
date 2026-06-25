@@ -13,6 +13,54 @@ from core.store import register, save_snapshot
 
 MAX_READ_LINES = 800
 
+# Sample size used by `_is_binary` to decide whether a file looks binary.
+BINARY_DETECT_SAMPLE_SIZE = 8192
+
+
+class BinaryFileError(Exception):
+    """Raised when `read_file` is asked to dump a file that looks binary.
+
+    The CLI layer catches this and converts it into a clean error message
+    so the agent doesn't get a screenful of garbled bytes.
+    """
+
+
+def _is_binary(filepath: str, sample_size: int = BINARY_DETECT_SAMPLE_SIZE) -> bool:
+    """Heuristic: does this file look like binary (not text)?
+
+    Mirrors git's heuristic. Two checks:
+      1. If the sample contains a NUL byte (`\\x00`), it's binary. This is
+         the strongest signal — text files essentially never contain NUL.
+      2. Otherwise, count bytes that are clearly non-text control bytes
+         (0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F). If >30% of the sample is
+         non-text control bytes, treat it as binary.
+
+    IMPORTANT: bytes in 0x80-0xFF are NOT counted as non-text — those are
+    valid UTF-8 continuation bytes / Latin-1 chars / etc. Only true control
+    bytes (the C0 range minus whitespace) count against the file. This
+    prevents false-positives on UTF-8 files with multibyte chars (中文,
+    café, emoji, etc.).
+    """
+    try:
+        with open(filepath, "rb") as fh:
+            chunk = fh.read(sample_size)
+    except OSError:
+        return False
+
+    if not chunk:
+        return False  # empty file is text
+
+    # Strong signal: NUL bytes never appear in text
+    if b"\x00" in chunk:
+        return True
+
+    # Weaker signal: count true control bytes (C0 range minus common
+    # whitespace). UTF-8 multibyte bytes (0x80-0xFF) are NOT counted.
+    # Whitespace chars we allow: \t (9), \n (10), \f (12), \r (13).
+    text_chars = set(range(0x20, 0x100)) | {0x09, 0x0A, 0x0C, 0x0D}
+    non_text = sum(1 for b in chunk if b not in text_chars)
+    return (non_text / len(chunk)) > 0.30
+
 
 def _parse_range(start: int, end: int | None, total: int) -> tuple[int, int]:
     """Validate / clamp a (start, end) line range against file bounds.
@@ -58,12 +106,24 @@ def read_file(filepath: str, start: int = 1, end: int | None = None) -> dict:
     Raises:
         FileNotFoundError: if the file doesn't exist
         IsADirectoryError: if filepath is a directory
+        BinaryFileError: if the file looks binary (NUL bytes or >30% non-text)
     """
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"file not found: {filepath}")
     if path.is_dir():
         raise IsADirectoryError(f"path is a directory: {filepath}")
+
+    # BUG-2 fix: refuse to dump binary files as garbled text. The agent
+    # would either hallucinate content or waste context tokens on garbage.
+    if _is_binary(str(path)):
+        raise BinaryFileError(
+            f"file appears to be binary: {filepath} "
+            f"(contains NUL bytes or >30% non-text bytes in the first "
+            f"{BINARY_DETECT_SAMPLE_SIZE} bytes). vcs read only works on "
+            f"text files. If you need to inspect a binary file's metadata, "
+            f"use `file {filepath}` or `vcs tree` on its parent directory."
+        )
 
     blob = get_blob_hash(str(path))
     register(blob, str(path))
@@ -72,14 +132,26 @@ def read_file(filepath: str, start: int = 1, end: int | None = None) -> dict:
     with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
         content_raw = fh.read()
 
+    # OPT-4 fix: if the file doesn't end with a newline, we still display
+    # it cleanly by ensuring the last visible line is followed by a newline
+    # in the output. We do NOT modify the file on disk — only the displayed
+    # content. Without this, `vcs read` on a no-trailing-newline file would
+    # merge the last line with the shell prompt when run in a terminal.
+    needs_trailing_newline = content_raw and not content_raw.endswith("\n")
+    if needs_trailing_newline:
+        content_for_display = content_raw + "\n"
+    else:
+        content_for_display = content_raw
+
     # Snapshot the FULL file content keyed by blob hash, so we can reconstruct
     # `base` for 3-way merge even when the file is untracked / not in git's
-    # object store.
+    # object store. Snapshot the ORIGINAL content (no added newline) so the
+    # snapshot matches what's on disk byte-for-byte.
     save_snapshot(blob, content_raw)
 
     # Splitlines keeps no trailing newline on the last element; we need to
     # preserve them so we use splitlines(keepends=True).
-    lines = content_raw.splitlines(keepends=True)
+    lines = content_for_display.splitlines(keepends=True)
     total = len(lines)
 
     start, end = _parse_range(start, end, total)

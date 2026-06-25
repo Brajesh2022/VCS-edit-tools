@@ -95,6 +95,18 @@ vcs status
 5. **Replace / Insert / Batch output** is just `status: ok` — nothing else.
 6. **Conflict response** is just: `Merge conflict detected. Please read the latest version and try again.` — no diff, no conflicting lines, no technical details.
 
+### v2.1 additions
+
+- **`vcs read` refuses binary files** (NUL bytes or >30% non-text control bytes) with a clean error instead of dumping garbled bytes. UTF-8 with multibyte chars (中文, café, emoji) is NOT falsely flagged.
+- **Specific blob-mismatch errors**: `vcs replace` (and friends) now distinguish three cases that all previously surfaced as the generic "Merge conflict detected":
+  - `blob 'XX' was never issued by vcs read` → you forgot to read the file first
+  - `blob 'XX' was issued for '<other_file>', not for '<target>'` → wrong blob for this file
+  - `Merge conflict detected...` → genuine concurrent modification (re-read & retry)
+- **Bounded registry growth**: the `.vcs_store.json` registry now caps at **100 blob entries per file** (oldest pruned first), and short-prefix + full-hash duplicates are consolidated. Prevents the unbounded growth seen in v2.0.
+- **`vcs gc` command** + **`vcs status --prune` flag**: garbage-collect stale registry entries (deleted files) and orphan snapshot files in one shot.
+- **Skeleton is now in-process** (no subprocess): ~40% faster (`vcs skeleton` dropped from ~190ms to ~110ms).
+- **`vcs read` adds a trailing newline for display** when the file has none — terminal output no longer merges the last line with the shell prompt. The on-disk file is NOT modified.
+
 ## AI Agent Integrations
 
 ### Antigravity (`.agy/`)

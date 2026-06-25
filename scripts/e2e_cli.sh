@@ -193,7 +193,7 @@ if [[ $EC -eq 2 ]]; then ok "replace without blob → exit 2 (v2 contract)"; els
 
 # ---------- Test 14: version flag ----------
 OUT=$($VCS --version 2>&1)
-if [[ "$OUT" == *"2.0.0"* ]]; then ok "--version works (v2.0.0)"; else no "--version" "out=$OUT"; fi
+if [[ "$OUT" == *"2.1.0"* ]]; then ok "--version works (v2.1.0)"; else no "--version" "out=$OUT"; fi
 
 # ---------- Test 15: help flag lists commands ----------
 OUT=$($VCS --help 2>&1)
@@ -205,8 +205,69 @@ echo "x" > subdir/file.txt
 OUT=$($VCS tree . --depth 1 2>&1)
 if [[ "$OUT" != *"agy-tree"* && "$OUT" == *"vcs tree"* ]]; then ok "tree uses 'vcs tree' (not agy-tree)"; else no "tree naming" "out=$OUT"; fi
 
+# ---------- Test 17 (v2.1): vcs read refuses binary files ----------
+printf "text\x00binary\n" > _e2e_binary.bin
+OUT=$($VCS read _e2e_binary.bin 2>&1)
+EC=$?
+if [[ $EC -eq 2 && "$OUT" == *"binary"* ]]; then ok "vcs read refuses binary (BUG-2)"; else no "binary refusal" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 18 (v2.1): vcs read accepts UTF-8 with multibyte chars ----------
+echo "Hello 世界 café" > _e2e_utf8.txt
+OUT=$($VCS read _e2e_utf8.txt 2>&1)
+EC=$?
+if [[ $EC -eq 0 && "$OUT" == *"世界"* ]]; then ok "vcs read accepts UTF-8 (BUG-2 regression)"; else no "utf8 acceptance" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 19 (v2.1): vcs replace with fake blob gives 'never issued' error ----------
+echo "content" > _e2e_fake.txt
+# Use a temp file for stdin to avoid heredoc+redirection ordering issues
+echo "new" > _e2e_new.txt
+OUT=$($VCS replace _e2e_fake.txt deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 1-1 < _e2e_new.txt 2>&1)
+EC=$?
+if [[ $EC -eq 2 && "$OUT" == *"never issued"* ]]; then ok "fake blob gives never-issued error (BUG-3a)"; else no "fake blob" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 20 (v2.1): vcs read adds trailing newline for display ----------
+printf "line1
+line2
+line3" > _e2e_no_newline.txt  # no trailing 
+
+# $(...) strips trailing newlines, so check via wc -c on the raw output
+RAW_OUT=$($VCS read _e2e_no_newline.txt 2>&1; printf "X")
+# If the char before X is a newline, the output ended with newline
+LAST_CHAR="${RAW_OUT: -2:1}"
+if [[ "$LAST_CHAR" == $'
+' ]]; then ok "vcs read adds trailing newline (OPT-4)"; else no "trailing newline" "last_char=$(printf '%q' "$LAST_CHAR")"; fi
+# Verify file on disk is NOT modified
+DISK_CONTENT=$(python3 -c "print(repr(open('_e2e_no_newline.txt').read()))")
+if [[ "$DISK_CONTENT" == *"'line1\nline2\nline3'"* ]]; then ok "file on disk unchanged (OPT-4 regression)"; else no "disk unchanged" "disk=$DISK_CONTENT"; fi
+
+# ---------- Test 21 (v2.1): vcs gc command works ----------
+echo "stale" > _e2e_stale.txt
+$VCS read _e2e_stale.txt > /dev/null 2>&1
+rm _e2e_stale.txt
+OUT=$($VCS gc 2>&1)
+EC=$?
+if [[ $EC -eq 0 && "$OUT" == *"pruned"* && "$OUT" == *"stale"* ]]; then ok "vcs gc works (OPT-3)"; else no "vcs gc" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 22 (v2.1): vcs status --prune flag works ----------
+echo "stale2" > _e2e_stale2.txt
+$VCS read _e2e_stale2.txt > /dev/null 2>&1
+rm _e2e_stale2.txt
+OUT=$($VCS status --prune 2>&1)
+EC=$?
+if [[ $EC -eq 0 && "$OUT" == *"pruned"* && "$OUT" != *"_e2e_stale2.txt"* ]]; then ok "vcs status --prune works (OPT-3)"; else no "status --prune" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 23 (v2.1): skeleton still works in-process ----------
+echo -e "def foo():\n    pass\ndef bar():\n    pass" > _e2e_skel.py
+OUT=$($VCS skeleton _e2e_skel.py 2>&1)
+EC=$?
+if [[ $EC -eq 0 && "$OUT" == *"def foo"* && "$OUT" == *"def bar"* ]]; then ok "skeleton in-process works (OPT-1)"; else no "skeleton in-process" "ec=$EC out=$OUT"; fi
+
+# ---------- Test 24 (v2.1): help text mentions gc command ----------
+OUT=$($VCS --help 2>&1)
+if echo "$OUT" | grep -q "gc"; then ok "--help lists gc command"; else no "--help gc" "out=$OUT"; fi
+
 # Cleanup
-rm -f _e2e_*.txt
+rm -f _e2e_*.txt _e2e_*.bin
 rm -rf _e2e_dir .vcs_store.json .vcs_snapshots/
 rmdir "$TEST_DIR" 2>/dev/null
 

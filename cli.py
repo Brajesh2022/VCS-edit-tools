@@ -41,12 +41,12 @@ from typing import Optional
 # Allow running as a script (python cli.py) and as an installed entry point.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.read import read_file, MAX_READ_LINES
+from core.read import read_file, MAX_READ_LINES, BinaryFileError
 from core.replace import replace as do_replace
 from core.blob import get_blob_hash
 from core.store import (
     register, resolve_path, save_snapshot, load_snapshot,
-    _find_repo_root, _load_store,
+    _find_repo_root, _load_store, gc_store, BlobMismatchError,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,30 +98,87 @@ def _resolve_target(filepath: str, blob: Optional[str] = None) -> str:
 
     Raises:
         FileNotFoundError: filepath doesn't exist
-        ValueError:        blob doesn't match the file's current content
+        BlobMismatchError: blob was never issued, OR was issued for a
+                           different file. (Genuine concurrent modifications
+                           are NOT raised here — they're detected later in
+                           do_replace() and surface as a conflict result.)
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"file not found: {filepath}")
 
     current_blob = get_blob_hash(filepath)
 
-    # Register the agent's CLAIMED blob → filepath so resolve_path can find the file.
     # If blob is None (e.g. skeleton command), use the current blob.
     claimed_blob = blob if blob else current_blob
 
-    # Always register the claimed blob so the replace logic can resolve the filepath
+    # BUG-3 fix: distinguish three blob-mismatch cases BEFORE registering.
+    # Only the "genuine concurrent modification" case should surface as a
+    # conflict later — the other two are programming errors by the agent
+    # and deserve specific, actionable error messages.
+    blob_lower = claimed_blob.lower()
+    current_lower = current_blob.lower()
+    matches_current = (
+        current_lower == blob_lower or current_lower.startswith(blob_lower)
+    )
+
+    if not matches_current:
+        # Blob doesn't match the file's current content. Three possibilities:
+        #   (a) Blob was never issued by vcs read at all (no snapshot, not
+        #       registered under any file).
+        #   (b) Blob was issued for a DIFFERENT file (registered under
+        #       another path, or snapshot exists but its content hashes to
+        #       a different file).
+        #   (c) Blob was issued for THIS file but the file has since been
+        #       modified externally — genuine concurrent modification.
+        snapshot = load_snapshot(blob_lower)
+        # Check registry: is this blob registered under any path?
+        repo_root = _find_repo_root(os.path.dirname(os.path.abspath(filepath)))
+        from core.store import lookup as _lookup
+        registered_path = _lookup(blob_lower, repo_root=repo_root)
+
+        # Normalize the target path for comparison
+        abs_target = os.path.abspath(filepath)
+        try:
+            rel_target = os.path.relpath(abs_target, repo_root)
+            if rel_target.startswith(".."):
+                rel_target = abs_target
+        except ValueError:
+            rel_target = abs_target
+
+        if snapshot is None and registered_path is None:
+            # Case (a): blob was never issued. The agent probably
+            # hallucinated it or copied the wrong value.
+            raise BlobMismatchError(
+                "never_issued",
+                f"blob '{_short_blob(blob_lower)}' was never issued by "
+                f"`vcs read`. Read the file first to get a valid blob: "
+                f"`vcs read {filepath}`",
+            )
+        elif registered_path and registered_path != rel_target and registered_path != abs_target:
+            # Case (b): blob is registered under a DIFFERENT path.
+            raise BlobMismatchError(
+                "wrong_file",
+                f"blob '{_short_blob(blob_lower)}' was issued for "
+                f"'{registered_path}', not for '{rel_target}'. "
+                f"Re-read the target file to get a fresh blob.",
+            )
+        # else: snapshot exists and/or registered under this same path →
+        # case (c), genuine concurrent modification. Fall through and let
+        # do_replace() detect the conflict and return a conflict result.
+
+    # Register the claimed blob → filepath so resolve_path can find the file.
     register(claimed_blob.lower(), filepath)
 
     # If the agent's blob matches the current file content, save the snapshot
     # (this is the "clean read" case — no conflict will occur).
     # If they don't match, the snapshot for the claimed blob should already
     # exist from the prior `vcs read` call. We deliberately DO NOT overwrite it.
-    if current_blob.lower() == claimed_blob.lower() or current_blob.lower().startswith(claimed_blob.lower()):
+    if matches_current:
         with open(filepath, "r", encoding="utf-8", errors="replace", newline="") as fh:
             save_snapshot(current_blob, fh.read())
         return current_blob
 
-    # Mismatch case: file has been modified since the agent read it.
+    # Mismatch case (c): file has been modified since the agent read it.
     # The snapshot for the claimed blob is what `vcs read` saved earlier.
     # We pass the claimed blob to do_replace() so it can detect the conflict.
     return claimed_blob
@@ -236,25 +293,28 @@ def cmd_read(args: list[str]) -> None:
         _error(str(e))
     except IsADirectoryError as e:
         _error(str(e))
+    except BinaryFileError as e:
+        # BUG-2 fix: surface a clean error for binary files instead of
+        # dumping garbled bytes. Exit code 2 (error), not 1 (conflict).
+        _error(str(e))
     except Exception as e:
         _error(f"{type(e).__name__}: {e}")
 
     # Auto-fallback to skeleton for >800 lines with no range specified
     if end is None and result.get("total_lines", 0) > 800:
         try:
-            script = os.path.join(SCRIPT_DIR, "skeleton.py")
-            if os.path.exists(script):
-                cmd = [sys.executable, script, filepath, "--json"]
-                out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
-                skel_data = json.loads(out)
-                result["content"] = (
-                    f"--- NOTE: File is {result['total_lines']} lines (> 800). "
-                    f"Auto-falling back to skeleton view. ---\n"
-                    f"--- To read full lines, use: vcs read {filepath} START-END ---\n\n"
-                ) + skel_data["output"]
-                result["shown_range"] = "skeleton"
-                result["truncated"] = 0
-                result["next_command"] = None
+            # OPT-1 fix: call skeletonizer in-process instead of spawning
+            # a subprocess. Saves ~80ms per >800-line read.
+            import skeleton as _skeleton_mod
+            skel_data = _skeleton_mod.generate_skeleton(Path(filepath))
+            result["content"] = (
+                f"--- NOTE: File is {result['total_lines']} lines (> 800). "
+                f"Auto-falling back to skeleton view. ---\n"
+                f"--- To read full lines, use: vcs read {filepath} START-END ---\n\n"
+            ) + skel_data["output"]
+            result["shown_range"] = "skeleton"
+            result["truncated"] = 0
+            result["next_command"] = None
         except Exception:
             pass  # fallback failed, return truncated raw lines
 
@@ -301,7 +361,11 @@ def cmd_replace(args: list[str]) -> None:
 
     try:
         blob_hash = _resolve_target(filepath, blob)
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
+        _error(str(e))
+    except BlobMismatchError as e:
+        # BUG-3 fix: never-issued / wrong-file mismatches are clean errors,
+        # NOT conflicts. Exit 2 with the specific message.
         _error(str(e))
 
     tmp_path = _write_temp(content)
@@ -352,7 +416,9 @@ def cmd_insert(args: list[str]) -> None:
 
     try:
         blob_hash = _resolve_target(filepath, blob)
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
+        _error(str(e))
+    except BlobMismatchError as e:
         _error(str(e))
 
     tmp_path = _write_temp(content)
@@ -403,7 +469,9 @@ def cmd_delete(args: list[str]) -> None:
 
     try:
         blob_hash = _resolve_target(filepath, blob)
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
+        _error(str(e))
+    except BlobMismatchError as e:
         _error(str(e))
 
     try:
@@ -612,7 +680,12 @@ def cmd_batch(args: list[str]) -> None:
 
             try:
                 blob_hash = _resolve_target(filepath, blob)
-            except (FileNotFoundError, ValueError) as e:
+            except FileNotFoundError as e:
+                results.append({"edit_index": i, "status": "error", "message": str(e)})
+                continue
+            except BlobMismatchError as e:
+                # BUG-3 fix: surface as an error (not a conflict) with the
+                # specific never-issued / wrong-file message.
                 results.append({"edit_index": i, "status": "error", "message": str(e)})
                 continue
 
@@ -761,57 +834,53 @@ def cmd_skeleton(args: list[str]) -> None:
     if not os.path.exists(filepath):
         _error(f"file not found: {filepath}")
 
-    script = os.path.join(SCRIPT_DIR, "skeleton.py")
-    if not os.path.exists(script):
-        _error("skeleton.py not found")
-
-    cmd = [sys.executable, script, filepath]
-
+    # Parse optional range
+    r_start, r_end = None, None
     if range_str:
         try:
-            start, end = _parse_range_arg(range_str)
-            if start is not None:
-                cmd.extend(["--start", str(start)])
-            if end is not None:
-                cmd.extend(["--end", str(end)])
+            r_start, r_end = _parse_range_arg(range_str)
         except ValueError:
             _error(f"invalid range: '{range_str}'")
 
+    # OPT-1 fix: call the skeletonizer in-process instead of spawning a
+    # subprocess. Saves the ~80ms Python interpreter startup cost on every
+    # skeleton call and removes the dependency on sys.executable.
     try:
-        out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        _error(f"skeleton failed: {e.stderr.strip() if e.stderr else 'unknown error'}")
+        # Import skeleton module lazily so cold-start of `vcs read` (which
+        # doesn't need skeleton) stays fast.
+        import skeleton as _skeleton_mod
+        skel_data = _skeleton_mod.generate_skeleton(
+            Path(filepath), start=r_start, end=r_end
+        )
+    except FileNotFoundError as e:
+        _error(str(e))
+    except IsADirectoryError as e:
+        _error(str(e))
+    except ValueError as e:
+        # Binary file or other validation error from skeleton
+        _error(f"skeleton failed: {e}")
+    except Exception as e:
+        _error(f"skeleton failed: {type(e).__name__}: {e}")
 
     # Also register the blob so the user can edit
     try:
         blob_hash = _resolve_target(filepath)
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
+        _error(str(e))
+    except BlobMismatchError as e:
         _error(str(e))
 
-    start = 1
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
-            total_lines = len(fh.read().splitlines())
-    except Exception:
-        total_lines = 0
-    end = total_lines
-
-    if range_str:
-        try:
-            r_start, r_end = _parse_range_arg(range_str)
-            if r_start is not None:
-                start = r_start
-            if r_end is not None:
-                end = r_end
-        except ValueError:
-            pass
+    # Determine display range (defaults to 1..total_lines)
+    total_lines = skel_data.get("total_lines", 0)
+    start = r_start if r_start is not None else 1
+    end = r_end if r_end is not None else total_lines
 
     blob = _short_blob(blob_hash)
     print(f"blob: {blob} (Use this for any further edits, no need to read again)")
     print(f"path: {filepath}")
     print(f"Code Lines: {start} to {end}")
     print("---")
-    print(out, end="")
+    print(skel_data["output"], end="")
 
 
 # ---------------------------------------------------------------------------
@@ -934,9 +1003,28 @@ def cmd_test(args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(args: list[str]) -> None:
-    """vcs status"""
+    """vcs status [--prune]
+
+    Without flags: list all blob→filepath mappings (existing files marked ✓,
+    deleted files marked ✗).
+
+    With --prune: run garbage collection BEFORE listing. Removes:
+      - Registry entries whose file no longer exists on disk
+      - Orphan snapshot files (no corresponding registry entry, left over
+        from v2.0 short-prefix duplicates)
+    Prints a summary of what was pruned, then the post-gc listing.
+    """
     try:
         repo_root = _find_repo_root()
+
+        # OPT-3 fix: --prune flag triggers gc_store() before listing
+        if "--prune" in args:
+            result = gc_store(repo_root=repo_root, prune_stale=True, prune_duplicates=True)
+            print(f"pruned: {result['stale_entries']} stale entries, "
+                  f"{result['orphan_snapshots']} orphan snapshots")
+            print(f"remaining: {result['total_remaining']} blobs")
+            print("---")
+
         data = _load_store(repo_root)
         blobs = data.get("blobs", {})
 
@@ -951,6 +1039,40 @@ def cmd_status(args: list[str]) -> None:
             short = blob_hash[:8]
             exists = "✓" if os.path.exists(os.path.join(repo_root, filepath)) else "✗"
             print(f"  {exists} {short}  →  {filepath}")
+    except Exception as e:
+        _error(str(e))
+
+
+# ---------------------------------------------------------------------------
+# Command: gc  (OPT-3 fix — explicit garbage collection)
+# ---------------------------------------------------------------------------
+
+def cmd_gc(args: list[str]) -> None:
+    """vcs gc
+
+    Garbage-collect the .vcs_store.json registry and .vcs_snapshots/ directory.
+
+    Removes:
+      - Registry entries whose filepath no longer exists on disk (e.g. files
+        deleted via `vcs delete` or externally — these otherwise linger
+        forever, BUG-4 finding #3).
+      - Orphan snapshot files in .vcs_snapshots/ that have no corresponding
+        registry entry (left over from v2.0's short-prefix duplicate bug).
+
+    Note: the per-file blob cap (MAX_BLOBS_PER_FILE=100) is enforced
+    automatically at register() time, so `vcs gc` doesn't need to handle
+    that case — it only handles the two stale-entry cases above.
+
+    Output:
+        pruned: N stale entries, M orphan snapshots
+        remaining: K blobs
+    """
+    try:
+        repo_root = _find_repo_root()
+        result = gc_store(repo_root=repo_root, prune_stale=True, prune_duplicates=True)
+        print(f"pruned: {result['stale_entries']} stale entries, "
+              f"{result['orphan_snapshots']} orphan snapshots")
+        print(f"remaining: {result['total_remaining']} blobs")
     except Exception as e:
         _error(str(e))
 
@@ -1004,6 +1126,7 @@ COMMANDS = {
     "fmt": cmd_fmt,
     "test": cmd_test,
     "status": cmd_status,
+    "gc": cmd_gc,
 }
 
 USAGE = """\
@@ -1023,7 +1146,8 @@ commands:
   grep      <query> [path] [-i] [-r]                Search with function/class context
   fmt       [--check] [path]                        Auto-format staged files
   test      <command> [args...]                     Run tests, show failures only
-  status                                       List all blob→filepath mappings
+  status    [--prune]                               List blob→filepath mappings (or prune stale entries)
+  gc                                            Garbage-collect stale registry entries + orphan snapshots
 
 notes:
   <blob>     = blob hash from `vcs read` (proves you read the file)
@@ -1041,7 +1165,7 @@ def main() -> None:
         sys.exit(0)
 
     if sys.argv[1] in ("-V", "--version"):
-        print("vcs 2.0.0")
+        print("vcs 2.1.0")
         sys.exit(0)
 
     command = sys.argv[1]
