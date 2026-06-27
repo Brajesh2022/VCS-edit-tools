@@ -264,7 +264,10 @@ def main():
             if current_file is not None:
                 print()  # Blank line between files
             current_file = filepath
-            current_blob = get_blob_hash(filepath)[:8]
+            try:
+                current_blob = get_blob_hash(filepath)[:8]
+            except Exception:
+                current_blob = "unknown"
             last_sig_line = None
 
         # Find enclosing function/class signature
