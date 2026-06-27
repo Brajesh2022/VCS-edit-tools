@@ -253,12 +253,12 @@ if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]
     mkdir -p "$AGY_PLUGINS_DIR"
     if [ -d "$INSTALL_DIR/.agy" ]; then
         cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
+        chmod +x "$AGY_PLUGINS_DIR/message.sh" 2>/dev/null || true
         ok "Antigravity plugin installed"
     else
         warn "Antigravity plugin source not found in $INSTALL_DIR/.agy"
     fi
 fi
-
 # ── Claude integration: just drop vcs-cli.md into ~/.claude/rules/ ───────────
 # No hooks, no plugins. Claude Code automatically loads rules files from
 # ~/.claude/rules/ as part of its system prompt — perfect for our use case.
