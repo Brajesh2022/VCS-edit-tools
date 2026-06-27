@@ -38,6 +38,11 @@ import argparse
 import subprocess
 from pathlib import Path
 
+try:
+    from core.blob import get_blob_hash
+except ImportError:
+    def get_blob_hash(filepath: str) -> str:
+        return "unknown"
 
 # Patterns that indicate the start of a function/class/method.
 # Each entry: (compiled_regex, description)
@@ -250,6 +255,7 @@ def main():
 
     # Group matches by file for cleaner output
     current_file = None
+    current_blob = "unknown"
     last_sig_line = None  # Track last shown signature to avoid repetition
 
     for filepath, line_no, line_text in matches:
@@ -258,6 +264,7 @@ def main():
             if current_file is not None:
                 print()  # Blank line between files
             current_file = filepath
+            current_blob = get_blob_hash(filepath)[:8]
             last_sig_line = None
 
         # Find enclosing function/class signature
@@ -265,7 +272,7 @@ def main():
 
         # Show signature if found and different from the last one shown
         if sig_line and sig_line != last_sig_line:
-            print(f"{filepath}:{sig_line}: {sig_text}    ← enclosing function")
+            print(f"{filepath} [blob: {current_blob}]:{sig_line}: {sig_text}    ← enclosing function")
             last_sig_line = sig_line
         elif sig_line and sig_line == last_sig_line:
             pass  # Same function, don't repeat the signature
@@ -274,7 +281,7 @@ def main():
             pass
 
         # Show the actual match
-        print(f"{filepath}:{line_no}: {line_text}")
+        print(f"{filepath} [blob: {current_blob}]:{line_no}: {line_text}")
 
     # Summary
     print(f"\n{len(matches)} match{'es' if len(matches) != 1 else ''} in {len(set(m[0] for m in matches))} file(s).", file=sys.stderr)
