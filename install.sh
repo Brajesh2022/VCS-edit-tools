@@ -1,70 +1,104 @@
 #!/usr/bin/env bash
-# VCS Edit CLI - Installer
+# VCS Edit CLI - Installer (v2 — redesigned interactive menu)
+#
+# Robust cross-platform installer with:
+#   * Arrow-key + SPACE + ENTER TUI plugin picker (real TTY required)
+#   * Numbered fallback when TTY is unavailable
+#   * Headless mode (-y / --plugins) for CI/CD
+#   * Proper terminal cleanup trap (cursor always restored, even on Ctrl-C)
+#   * Works on Linux, macOS, Termux, Cygwin, MinGW
 set -Eeuo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# ============================================================================
+# Terminal state — track cursor visibility so we ALWAYS restore it
+# ============================================================================
+_CURSOR_HIDDEN=0
+
+_term_cleanup() {
+    if [[ $_CURSOR_HIDDEN -ne 0 ]]; then
+        printf '\033[?25h' >&2  # show cursor
+        _CURSOR_HIDDEN=0
+    fi
+}
+trap '_term_cleanup' EXIT
+trap '_term_cleanup; exit 130' INT
+trap '_term_cleanup; exit 143' TERM
+
+# ============================================================================
+# Colors — only when stdout is a TTY
+# ============================================================================
 if [[ -t 1 ]]; then
-  BOLD="\033[1m"
-  DIM="\033[2m"
-  GREEN="\033[32m"
-  RED="\033[31m"
-  CYAN="\033[36m"
-  RESET="\033[0m"
+    BOLD=$'\033[1m';   DIM=$'\033[2m'
+    GREEN=$'\033[32m'; RED=$'\033[31m'; CYAN=$'\033[36m'; YELLOW=$'\033[33m'
+    RESET=$'\033[0m'
 else
-  BOLD="" DIM="" GREEN="" RED="" CYAN="" RESET=""
+    BOLD=""; DIM=""; GREEN=""; RED=""; CYAN=""; YELLOW=""; RESET=""
 fi
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ============================================================================
+# Logging helpers
+# ============================================================================
 info()    { printf '%b\n' " ${CYAN}[..]${RESET} ${DIM}$*${RESET}"; }
 ok()      { printf '%b\n' " ${GREEN}[OK]${RESET} $*"; }
+warn()    { printf '%b\n' " ${YELLOW}[!]${RESET} $*"; }
 die()     {
-  printf "\033[?25h" >&2
-  printf '\n%b\n' " ${RED}[ERR]${RESET} ${1:-Installation failed.}" >&2
-  exit 1
+    _term_cleanup
+    printf '\n%b\n' " ${RED}[ERR]${RESET} ${1:-Installation failed.}" >&2
+    exit 1
 }
-warn()    { printf '%b\n' " ${RED}[!]${RESET} $*"; }
 divider() { printf '%b\n' "${DIM}────────────────────────────────────────${RESET}"; }
 
+# ============================================================================
+# Spinner — runs a backgrounded command with a rotating glyph
+#   spinner "<message>" <command> [args...]
+# ============================================================================
 spinner() {
-  local pid=$1
-  local msg=$2
-  local spinstr='\|/-'
-  printf "\033[?25l" # Hide cursor
-  while kill -0 "$pid" 2>/dev/null; do
-    local temp=${spinstr#?}
-    printf "\r\033[K %b[%c]%b %b%s%b" "$CYAN" "$spinstr" "$RESET" "$DIM" "$msg" "$RESET"
-    local spinstr=$temp${spinstr%"$temp"}
-    sleep 0.1
-  done
-  local exit_status=0
-  wait "$pid" || exit_status=$?
-  if [ $exit_status -eq 0 ]; then
-    printf "\r\033[K %b[OK]%b %s\n" "$GREEN" "$RESET" "$msg"
-  else
-    printf "\r\033[K %b[ERR]%b %s\n" "$RED" "$RESET" "$msg"
-  fi
-  printf "\033[?25h" # Show cursor
-  return $exit_status
+    local msg="$1"; shift
+    local spinstr='|/-\'
+    local i=0 pid rc
+
+    "$@" >/dev/null 2>&1 &
+    pid=$!
+    _CURSOR_HIDDEN=1
+    printf '\033[?25l' >&2          # hide cursor
+    while kill -0 "$pid" 2>/dev/null; do
+        printf '\r\033[K %b[%c]%b %b%s%b' \
+            "$CYAN" "${spinstr:i++%4:1}" "$RESET" "$DIM" "$msg" "$RESET" >&2
+        sleep 0.1
+    done
+    rc=0; wait "$pid" || rc=$?
+    _CURSOR_HIDDEN=0
+    printf '\033[?25h' >&2          # show cursor
+    if [[ $rc -eq 0 ]]; then
+        printf '\r\033[K %b[OK]%b %s\n' "$GREEN" "$RESET" "$msg"
+    else
+        printf '\r\033[K %b[ERR]%b %s\n' "$RED" "$RESET" "$msg"
+    fi
+    return $rc
 }
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# ============================================================================
+# Header
+# ============================================================================
 echo ""
 printf "  %bVCS Edit Tools%b\n" "${BOLD}${CYAN}" "${RESET}"
 printf "  %bUniversal Installer%b\n" "${DIM}" "${RESET}"
 echo ""
 divider
 
-# ── Initialization ────────────────────────────────────────────────────────────
+# ============================================================================
+# Initialization & flag parsing
+# ============================================================================
 INSTALL_DIR="$HOME/.VCS-edit-tools"
 BIN_DIR="$HOME/.local/bin"
 
 OS="$(uname -s)"
-case "${OS}" in
-    Linux*)     MACHINE=Linux;;
-    Darwin*)    MACHINE=Mac;;
-    CYGWIN*)    MACHINE=Cygwin;;
-    MINGW*)     MACHINE=MinGw;;
-    *)          MACHINE="UNKNOWN:${OS}";;
+case "$OS" in
+    Linux*)  MACHINE=Linux ;;
+    Darwin*) MACHINE=Mac ;;
+    CYGWIN*) MACHINE=Cygwin ;;
+    MINGW*)  MACHINE=MinGw ;;
+    *)       MACHINE="UNKNOWN:$OS" ;;
 esac
 
 if [[ -n "${PREFIX:-}" && "${PREFIX:-}" == *"/usr"* && "${OS:-}" == "Linux" ]]; then
@@ -77,49 +111,72 @@ fi
 NON_INTERACTIVE=false
 SELECTED_PLUGINS=""
 
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
+usage() {
+    cat <<EOF
+VCS Edit Tools installer
+
+Usage: install.sh [options]
+
+Options:
+  -y, --yes               Non-interactive (skip all prompts)
+  --plugins LIST          Comma-separated: antigravity,claude,codex,all
+  --install-plugins       Shortcut for --plugins antigravity
+  -h, --help              Show this help
+
+Examples:
+  install.sh -y --plugins claude,codex
+  install.sh              # interactive TUI
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         -y|--yes) NON_INTERACTIVE=true ;;
         --plugins)
+            [[ $# -lt 2 ]] && die "--plugins requires a value"
             SELECTED_PLUGINS="$2"
             shift
             ;;
-        --install-plugins)
-            SELECTED_PLUGINS="antigravity"
-            ;;
-        *) die "Unknown parameter passed: $1" ;;
+        --install-plugins) SELECTED_PLUGINS="antigravity" ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "Unknown parameter: $1" ;;
     esac
     shift
 done
 
-# ── Dependencies ──────────────────────────────────────────────────────────────
-deps_missing=false
+# ============================================================================
+# Dependencies
+# ============================================================================
+deps_missing=()
 for cmd in git python3; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        deps_missing=true
-    fi
+    command -v "$cmd" >/dev/null 2>&1 || deps_missing+=("$cmd")
 done
 
-if [ "$deps_missing" = true ]; then
-    if [ "$NON_INTERACTIVE" = true ]; then
-        die "Non-interactive mode: please install missing dependencies (git, python3)."
+if [[ ${#deps_missing[@]} -gt 0 ]]; then
+    if [[ "$NON_INTERACTIVE" == true ]]; then
+        die "Non-interactive mode: missing deps (${deps_missing[*]}). Install manually."
     fi
-    printf "\n"
-    info "Missing dependencies: git, python3"
-    read -p "  Install missing dependencies automatically? (y/n) " -n 1 -r choice </dev/tty || choice="n"
-    printf "\n"
+    printf '\n'
+    warn "Missing dependencies: ${deps_missing[*]}"
+    # Reattach stdin to TTY if piped (curl|bash case)
+    if [[ ! -t 0 ]] && [[ -c /dev/tty ]]; then
+        exec 0</dev/tty || true
+    fi
+    choice=""
+    if [[ -t 0 ]]; then
+        read -r -p "  Install missing dependencies automatically? (y/n) " choice || choice="n"
+    else
+        choice="n"
+    fi
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         if command -v pkg >/dev/null 2>&1; then
-            pkg install -y git python >/dev/null 2>&1 &
-            spinner $! "Installing via pkg..." || die "Failed to install via pkg."
+            spinner "Installing via pkg..." pkg install -y git python
         elif command -v apt >/dev/null 2>&1; then
-            (sudo apt update && sudo apt install -y git python3) >/dev/null 2>&1 &
-            spinner $! "Installing via apt..." || die "Failed to install via apt."
+            spinner "Installing via apt..." bash -c 'sudo apt update && sudo apt install -y git python3'
         elif command -v brew >/dev/null 2>&1; then
-            brew install git python3 >/dev/null 2>&1 &
-            spinner $! "Installing via brew..." || die "Failed to install via brew."
+            spinner "Installing via brew..." brew install git python3
         else
-            die "Could not detect package manager. Install manually."
+            die "No supported package manager. Install deps manually."
         fi
     else
         die "Dependencies required."
@@ -127,158 +184,66 @@ if [ "$deps_missing" = true ]; then
 fi
 ok "Dependencies met"
 
-# ── Clone / Update ────────────────────────────────────────────────────────────
-if [ -d "$INSTALL_DIR" ]; then
-    (git -C "$INSTALL_DIR" fetch origin main && git -C "$INSTALL_DIR" reset --hard origin/main || git -C "$INSTALL_DIR" pull origin master) >/dev/null 2>&1 &
-    spinner $! "Updating repository..." || die "Failed to update repo."
+# ============================================================================
+# Clone / Update repo
+# ============================================================================
+if [[ -d "$INSTALL_DIR" ]]; then
+    spinner "Updating repository..." \
+        bash -c "git -C '$INSTALL_DIR' fetch origin main && git -C '$INSTALL_DIR' reset --hard origin/main || git -C '$INSTALL_DIR' pull origin master"
 else
-    git clone https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR" >/dev/null 2>&1 &
-    spinner $! "Cloning repository..." || die "Failed to clone repo."
+    spinner "Cloning repository..." \
+        git clone https://github.com/Brajesh2022/VCS-edit-tools.git "$INSTALL_DIR"
 fi
 
-# ── Install ───────────────────────────────────────────────────────────────────
+# ============================================================================
+# Install — link vcs binary
+# ============================================================================
 mkdir -p "$BIN_DIR"
 chmod +x "$INSTALL_DIR/vcs"
-
 if command -v termux-fix-shebang >/dev/null 2>&1; then
     termux-fix-shebang "$INSTALL_DIR/vcs"
 fi
-
 ln -sf "$INSTALL_DIR/vcs" "$BIN_DIR/vcs"
 ok "CLI linked to $BIN_DIR/vcs"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     warn "$BIN_DIR is not in PATH."
-    warn "Add export PATH=\"\$PATH:$BIN_DIR\" to your shell profile."
+    warn "Add this to your shell profile:"
+    printf '  %bexport PATH="$PATH:%s"%b\n' "$CYAN" "$BIN_DIR" "$RESET"
 fi
 
-# ── Plugins ───────────────────────────────────────────────────────────────────
-if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
-    echo ""
-    divider
-    printf "  %bAI Agent Integrations%b\n" "${BOLD}" "${RESET}"
-
-    options=("Antigravity (.agy)" "Claude (.claude/rules/)" "Codex (~/.codex/AGENTS.md)")
-    plugin_ids=("antigravity" "claude" "codex")
-    selections=(1 0 0)
-    cursor=0
-
-    # Try to reassign stdin to tty for interactive input if piped
-    if [ ! -t 0 ] && [ -c /dev/tty ]; then
-        exec < /dev/tty || true
-    fi
-
-    if [ -t 0 ]; then
-        printf "\033[?25l" # Hide cursor
-        echo "  (Use arrow keys to move, SPACE to toggle, ENTER to confirm)"
-        while true; do
-            for i in "${!options[@]}"; do
-                if [[ $i -eq $cursor ]]; then
-                    prefix="${CYAN}${BOLD}  > "
-                else
-                    prefix="    "
-                fi
-
-                if [[ ${selections[$i]} -eq 1 ]]; then
-                    box="[x]"
-                else
-                    box="[ ]"
-                fi
-
-                printf "\r\033[K%b%s %s%b\n" "$prefix" "$box" "${options[$i]}" "${RESET}"
-            done
-
-            key=""
-            if ! IFS= read -rsn1 key; then
-                break
-            fi
-            case "$key" in
-                $'\e'|$'\x1b')
-                    k1=""
-                    k2=""
-                    IFS= read -rsn1 -t 0.1 k1 || true
-                    if [[ "$k1" == "[" || "$k1" == "O" ]]; then
-                        IFS= read -rsn1 -t 0.1 k2 || true
-                        if [[ "$k2" == "A" || "$k2" == "D" ]]; then
-                            cursor=$(( (cursor - 1 + ${#options[@]}) % ${#options[@]} ))
-                        elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
-                            cursor=$(( (cursor + 1) % ${#options[@]} ))
-                        fi
-                    fi
-                    ;;
-                " ")
-                    if [[ ${selections[$cursor]} -eq 1 ]]; then
-                        selections[$cursor]=0
-                    else
-                        selections[$cursor]=1
-                    fi
-                    ;;
-                "" | $'\n' | $'\r')
-                    break
-                    ;;
-            esac
-            printf "\033[%dA" "${#options[@]}"
-        done
-        printf "\033[?25h\n" # Restore cursor
-
-        SELECTED_PLUGINS=""
-        for i in "${!options[@]}"; do
-            if [[ ${selections[$i]} -eq 1 ]]; then
-                SELECTED_PLUGINS="${SELECTED_PLUGINS}${plugin_ids[$i]},"
-            fi
-        done
-        [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
-
-    else
-        # Fallback if no TTY is detected
-        echo "  1) Antigravity (.agy)"
-        echo "  2) Claude (.claude/rules/)"
-        echo "  3) Codex (~/.codex/AGENTS.md)"
-        echo "  4) Skip"
-        echo ""
-        read -p "  Select an option (1-4) [default: 1]: " choice || choice="1"
-        case "${choice:-1}" in
-            1) SELECTED_PLUGINS="antigravity," ;;
-            2) SELECTED_PLUGINS="claude," ;;
-            3) SELECTED_PLUGINS="codex," ;;
-            *) SELECTED_PLUGINS="none" ;;
-        esac
-    fi
-    divider
-fi
-
-# ── Antigravity plugin ───────────────────────────────────────────────────────
-if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
-    AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
+# ============================================================================
+# Plugin installers
+# ============================================================================
+install_antigravity() {
+    local AGY_PLUGINS_DIR="$HOME/.gemini/config/plugins/vcs-edit"
     mkdir -p "$AGY_PLUGINS_DIR"
-    if [ -d "$INSTALL_DIR/.agy" ]; then
-        cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
+    if [[ -d "$INSTALL_DIR/.agy" ]]; then
+        cp -r "$INSTALL_DIR/.agy/." "$AGY_PLUGINS_DIR/" 2>/dev/null || true
         chmod +x "$AGY_PLUGINS_DIR/message.sh" 2>/dev/null || true
         ok "Antigravity plugin installed"
     else
-        warn "Antigravity plugin source not found in $INSTALL_DIR/.agy"
+        warn "Antigravity source not found at $INSTALL_DIR/.agy"
     fi
-fi
-# ── Claude integration: just drop vcs-cli.md into ~/.claude/rules/ ───────────
-# No hooks, no plugins. Claude Code automatically loads rules files from
-# ~/.claude/rules/ as part of its system prompt — perfect for our use case.
-if [[ "$SELECTED_PLUGINS" == *"claude"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
-    CLAUDE_RULES_DIR="$HOME/.claude/rules"
+}
+
+install_claude() {
+    local CLAUDE_RULES_DIR="$HOME/.claude/rules"
     mkdir -p "$CLAUDE_RULES_DIR"
-    if [ -f "$INSTALL_DIR/.claude/vcs-cli.md" ]; then
+    if [[ -f "$INSTALL_DIR/.claude/vcs-cli.md" ]]; then
         cp -f "$INSTALL_DIR/.claude/vcs-cli.md" "$CLAUDE_RULES_DIR/vcs-cli.md"
         ok "Claude rules installed at $CLAUDE_RULES_DIR/vcs-cli.md"
 
-        # Clean up legacy hooks/payload from previous installs (v1 had a hooks system).
-        LEGACY_PLUGIN_DIR="$HOME/.claude/plugins/vcs-edit"
-        if [ -d "$LEGACY_PLUGIN_DIR" ]; then
+        # Clean up legacy v1 hooks/plugins
+        local LEGACY_PLUGIN_DIR="$HOME/.claude/plugins/vcs-edit"
+        if [[ -d "$LEGACY_PLUGIN_DIR" ]]; then
             rm -rf "$LEGACY_PLUGIN_DIR"
             info "Removed legacy Claude hooks/plugins from $LEGACY_PLUGIN_DIR"
         fi
 
-        # Remove the UserPromptSubmit hook entry from settings.json if it points at vcs-edit.
-        if [ -f "$HOME/.claude/settings.json" ]; then
-            python3 -c "
+        # Remove legacy UserPromptSubmit hook from settings.json
+        if [[ -f "$HOME/.claude/settings.json" ]]; then
+            python3 - <<'PY' || true
 import json, os, sys
 sp = os.path.expanduser('~/.claude/settings.json')
 try:
@@ -301,44 +266,245 @@ if changed:
     with open(sp, 'w') as f:
         json.dump(s, f, indent=2)
     print('    cleaned legacy hook from ~/.claude/settings.json')
-" || true
+PY
         fi
     else
-        warn "Claude rules source not found in $INSTALL_DIR/.claude/vcs-cli.md"
+        warn "Claude source not found at $INSTALL_DIR/.claude/vcs-cli.md"
     fi
-fi
+}
 
-# ── Codex integration: ~/.codex/AGENTS.md (with override logic) ──────────────
-# Codex does not have a hooks/rules system. It loads ~/.codex/AGENTS.md at
-# session start. We respect the user's hierarchy:
-#   1. If ~/.codex/AGENTS.override.md exists  → do nothing (user has overridden)
-#   2. Else if ~/.codex/AGENTS.md exists       → do nothing (user already has one)
-#   3. Else                                    → create AGENTS.md with VCS instructions
-if [[ "$SELECTED_PLUGINS" == *"codex"* || "$SELECTED_PLUGINS" == *"all"* ]]; then
-    CODEX_DIR="$HOME/.codex"
+install_codex() {
+    local CODEX_DIR="$HOME/.codex"
     mkdir -p "$CODEX_DIR"
+    local OVERRIDE_FILE="$CODEX_DIR/AGENTS.override.md"
+    local AGENTS_FILE="$CODEX_DIR/AGENTS.md"
 
-    OVERRIDE_FILE="$CODEX_DIR/AGENTS.override.md"
-    AGENTS_FILE="$CODEX_DIR/AGENTS.md"
-
-    if [ -f "$OVERRIDE_FILE" ]; then
+    if [[ -f "$OVERRIDE_FILE" ]]; then
         ok "Codex: AGENTS.override.md detected — respecting user override, no changes made."
-    elif [ -f "$AGENTS_FILE" ]; then
-        ok "Codex: AGENTS.md already exists — leaving it untouched (user has their own)."
-        info "        To install VCS instructions, rename your file to AGENTS.override.md"
-        info "        first, then re-run this installer."
+    elif [[ -f "$AGENTS_FILE" ]]; then
+        ok "Codex: AGENTS.md already exists — leaving it untouched."
+        info "        To install VCS instructions, rename it to AGENTS.override.md first, then re-run."
     else
-        # Neither exists → create one with VCS instructions
-        if [ -f "$INSTALL_DIR/.codex/AGENTS.md" ]; then
+        if [[ -f "$INSTALL_DIR/.codex/AGENTS.md" ]]; then
             cp -f "$INSTALL_DIR/.codex/AGENTS.md" "$AGENTS_FILE"
             ok "Codex: created $AGENTS_FILE with VCS CLI instructions."
         else
             warn "Codex: source template not found at $INSTALL_DIR/.codex/AGENTS.md"
         fi
     fi
+}
+
+# ============================================================================
+# Interactive plugin selection
+# ============================================================================
+menu_options=("Antigravity (.agy)" "Claude (.claude/rules/)" "Codex (~/.codex/AGENTS.md)")
+menu_ids=("antigravity" "claude" "codex")
+
+# Read a single keypress and emit a normalized token.
+# Tokens: up | down | left | right | space | enter | esc | quit | <other-char>
+read_key() {
+    local k=""
+    # Read one byte. On EOF (Ctrl-D), return 'esc' so the menu cancels safely.
+    IFS= read -rsn1 k 2>/dev/null || { printf 'esc'; return 0; }
+
+    # ESC — possibly the start of an arrow-key sequence
+    if [[ "$k" == $'\e' ]]; then
+        local k1="" k2=""
+        # Generous 0.5s timeout — works on slow SSH / WSL terminals
+        IFS= read -rsn1 -t 0.5 k1 2>/dev/null || true
+        if [[ "$k1" == "[" || "$k1" == "O" ]]; then
+            IFS= read -rsn1 -t 0.5 k2 2>/dev/null || true
+            case "$k2" in
+                A) printf 'up'    ;;
+                B) printf 'down'  ;;
+                C) printf 'right' ;;
+                D) printf 'left'  ;;
+                *) printf 'esc'   ;;
+            esac
+        elif [[ -z "$k1" ]]; then
+            # Bare ESC — treat as cancel
+            printf 'esc'
+        else
+            printf 'esc'
+        fi
+        return 0
+    fi
+
+    # Empty -> Enter (newline was the read terminator)
+    if [[ -z "$k" ]]; then
+        printf 'enter'; return 0
+    fi
+    # Space
+    if [[ "$k" == " " ]]; then
+        printf 'space'; return 0
+    fi
+    # q / Q = quick quit
+    if [[ "$k" == "q" || "$k" == "Q" ]]; then
+        printf 'quit'; return 0
+    fi
+    # Numeric shortcut
+    if [[ "$k" =~ [0-9] ]]; then
+        printf '%s' "$k"; return 0
+    fi
+    # Anything else: emit raw
+    printf '%s' "$k"
+}
+
+# Draw the menu. Argument $1 = number of lines to move up before redrawing (0 = first draw).
+draw_menu() {
+    local move_up="${1:-0}"
+    if [[ "$move_up" -gt 0 ]]; then
+        printf '\033[%dA' "$move_up" >&2
+    fi
+    local i
+    for i in "${!menu_options[@]}"; do
+        if [[ $i -eq $cursor ]]; then
+            local prefix="  ${CYAN}${BOLD}> "
+        else
+            local prefix="    "
+        fi
+        if [[ ${selections[$i]} -eq 1 ]]; then
+            local box="[x]"
+        else
+            local box="[ ]"
+        fi
+        printf '\r\033[K%b%s %s%b\n' "$prefix" "$box" "${menu_options[$i]}" "$RESET" >&2
+    done
+}
+
+if [[ -z "$SELECTED_PLUGINS" && "$NON_INTERACTIVE" == false ]]; then
+    echo ""
+    divider
+    printf "  %bAI Agent Integrations%b\n" "${BOLD}" "${RESET}"
+
+    selections=(0 0 0)
+    cursor=0
+
+    # Decide whether we have an interactive TTY
+    have_tty=false
+    if [[ -t 0 ]]; then
+        have_tty=true
+    elif [[ -c /dev/tty ]]; then
+        # curl|bash case — try to reattach stdin to /dev/tty
+        if exec 0</dev/tty 2>/dev/null; then
+            [[ -t 0 ]] && have_tty=true
+        fi
+    fi
+
+    if $have_tty; then
+        # ─── TUI menu ─────────────────────────────────────────────────────
+        echo "  ${DIM}(↑/↓ move · SPACE toggle · ENTER confirm · ESC/q skip)${RESET}"
+
+        _CURSOR_HIDDEN=1
+        printf '\033[?25l' >&2          # hide cursor
+        menu_lines=${#menu_options[@]}
+        draw_menu 0
+
+        while true; do
+            key=""
+            # `|| true` — read_key always returns 0, but be defensive against set -e
+            key="$(read_key)" || key=""
+
+            case "$key" in
+                up|left)
+                    cursor=$(( (cursor - 1 + menu_lines) % menu_lines ))
+                    draw_menu "$menu_lines"
+                    ;;
+                down|right)
+                    cursor=$(( (cursor + 1) % menu_lines ))
+                    draw_menu "$menu_lines"
+                    ;;
+                space)
+                    if [[ ${selections[$cursor]} -eq 1 ]]; then
+                        selections[$cursor]=0
+                    else
+                        selections[$cursor]=1
+                    fi
+                    draw_menu "$menu_lines"
+                    ;;
+                enter)
+                    break
+                    ;;
+                esc|quit)
+                    # Cancel — clear all selections
+                    selections=(0 0 0)
+                    break
+                    ;;
+                1)
+                    cursor=0
+                    selections[0]=$(( 1 - selections[0] ))
+                    draw_menu "$menu_lines"
+                    ;;
+                2)
+                    cursor=1
+                    selections[1]=$(( 1 - selections[1] ))
+                    draw_menu "$menu_lines"
+                    ;;
+                3)
+                    cursor=2
+                    selections[2]=$(( 1 - selections[2] ))
+                    draw_menu "$menu_lines"
+                    ;;
+                *)
+                    # Unknown key — redraw to give visual feedback that we're alive
+                    draw_menu "$menu_lines"
+                    ;;
+            esac
+        done
+
+        _CURSOR_HIDDEN=0
+        printf '\033[?25h\n' >&2        # show cursor + blank line
+
+        SELECTED_PLUGINS=""
+        for i in "${!menu_options[@]}"; do
+            if [[ ${selections[$i]} -eq 1 ]]; then
+                SELECTED_PLUGINS="${SELECTED_PLUGINS}${menu_ids[$i]},"
+            fi
+        done
+        [[ -z "$SELECTED_PLUGINS" ]] && SELECTED_PLUGINS="none"
+
+    else
+        # ─── Numbered fallback (no TTY) ──────────────────────────────────
+        cat <<EOF
+  Select integrations to install:
+    1) Antigravity (.agy)
+    2) Claude    (.claude/rules/)
+    3) Codex     (~/.codex/AGENTS.md)
+    4) All of the above
+    5) Skip
+EOF
+        choice=""
+        read -r -p "  Choice [1-5, default 5]: " choice || choice="5"
+        case "${choice:-5}" in
+            1) SELECTED_PLUGINS="antigravity" ;;
+            2) SELECTED_PLUGINS="claude" ;;
+            3) SELECTED_PLUGINS="codex" ;;
+            4) SELECTED_PLUGINS="all" ;;
+            *) SELECTED_PLUGINS="none" ;;
+        esac
+    fi
+    divider
 fi
 
-# ── Complete ──────────────────────────────────────────────────────────────────
+# ============================================================================
+# Apply plugin selections
+# ============================================================================
+if [[ "$SELECTED_PLUGINS" == "all" || "$SELECTED_PLUGINS" == *"antigravity"* ]]; then
+    install_antigravity
+fi
+if [[ "$SELECTED_PLUGINS" == "all" || "$SELECTED_PLUGINS" == *"claude"* ]]; then
+    install_claude
+fi
+if [[ "$SELECTED_PLUGINS" == "all" || "$SELECTED_PLUGINS" == *"codex"* ]]; then
+    install_codex
+fi
+if [[ "$SELECTED_PLUGINS" == "none" ]]; then
+    info "No plugins selected — CLI still installed and ready to use."
+fi
+
+# ============================================================================
+# Done
+# ============================================================================
 echo ""
 printf '%b\n' "${GREEN}${BOLD}Installation Complete.${RESET}"
 divider
