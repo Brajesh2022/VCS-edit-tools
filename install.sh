@@ -163,12 +163,16 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
     selections=(1 0 0)
     cursor=0
 
-    # Try to reassign stdin to tty for interactive input if piped
-    if [ ! -t 0 ] && [ -c /dev/tty ]; then
-        exec < /dev/tty || true
+    # Try to determine TTY for interactive input
+    HAS_TTY=false
+    if [ -t 0 ]; then
+        HAS_TTY=true
+        exec 3<&0
+    elif [ -c /dev/tty ] && exec 3</dev/tty 2>/dev/null; then
+        HAS_TTY=true
     fi
 
-    if [ -t 0 ]; then
+    if [ "$HAS_TTY" = true ]; then
         printf "\033[?25l" # Hide cursor
         echo "  (Use arrow keys to move, SPACE to toggle, ENTER to confirm)"
         while true; do
@@ -189,16 +193,16 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
             done
 
             key=""
-            if ! IFS= read -rsn1 key; then
+            if ! IFS= read -rsn1 key <&3; then
                 break
             fi
             case "$key" in
                 $'\e'|$'\x1b')
                     k1=""
                     k2=""
-                    IFS= read -rsn1 -t 0.1 k1 || true
+                    IFS= read -rsn1 -t 0.1 k1 <&3 || true
                     if [[ "$k1" == "[" || "$k1" == "O" ]]; then
-                        IFS= read -rsn1 -t 0.1 k2 || true
+                        IFS= read -rsn1 -t 0.1 k2 <&3 || true
                         if [[ "$k2" == "A" || "$k2" == "D" ]]; then
                             cursor=$(( (cursor - 1 + ${#options[@]}) % ${#options[@]} ))
                         elif [[ "$k2" == "B" || "$k2" == "C" ]]; then
@@ -219,6 +223,7 @@ if [ -z "$SELECTED_PLUGINS" ] && [ "$NON_INTERACTIVE" = false ]; then
             esac
             printf "\033[%dA" "${#options[@]}"
         done
+        exec 3<&-
         printf "\033[?25h\n" # Restore cursor
 
         SELECTED_PLUGINS=""
