@@ -465,12 +465,21 @@ def main():
 
     # Hidden summary at bottom
     if hidden_summary and not args.all:
+        aggregated = {}
+        for name, count in hidden_summary:
+            if name not in aggregated:
+                aggregated[name] = {"instances": 0, "files": 0}
+            aggregated[name]["instances"] += 1
+            aggregated[name]["files"] += count
+
         print()
         print("---")
         print("Hidden by default (use --all to show):")
-        for name, count in hidden_summary:
-            print(f"  {name}/  [{count} files]")
-
+        for name, data in aggregated.items():
+            if data["instances"] > 1:
+                print(f"  {name}/  [{data['instances']} dirs, {data['files']} files total]")
+            else:
+                print(f"  {name}/  [{data['files']} files]")
     # Footer — uses `vcs list` (was previously `agy-tree`)
     print("---")
     if args.depth > 1:
