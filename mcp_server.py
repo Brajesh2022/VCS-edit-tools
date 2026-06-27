@@ -75,99 +75,18 @@ def vcs_read(filepath: str, start: int = 1, end: Optional[int] = None) -> dict:
         return {"status": "error", "message": str(e)}
 
 @mcp.tool()
-def vcs_replace(target: str, line_range: str, content: str) -> dict:
+def vcs_edit(edits: list[dict]) -> dict:
     """
-    Replaces system `replace_file_content`. Prefer MCP over system tools.
-    action: Replace specific line range with new content
-    args:
-      target: blob hash (from vcs_read) or filepath
-      line_range: 'START-END' (1-indexed inclusive, e.g. '10-15' or '10-10')
-      content: Raw text. NO line numbers.
-    features: Safe 3-way auto-merge. Returns diff on conflict.
-    """
-    blob_hash = _resolve_target(target)
-    
-    if content and not content.endswith('\n'):
-        content += '\n'
-    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as f:
-        f.write(content)
-        tmp_path = f.name
-        
-    try:
-        search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
-        result = do_replace(blob_hash, line_range, tmp_path, search_root=search_root)
-        return _format_result(result)
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-@mcp.tool()
-def vcs_insert(target: str, line_str: str, content: str) -> dict:
-    """
-    Replaces system tools for inserting lines. Prefer MCP over system tools.
-    action: Insert text BEFORE specified line
-    args:
-      target: blob hash (from vcs_read) or filepath
-      line_str: 1-indexed line number (e.g. '10' inserts before line 10)
-      content: Raw text. NO line numbers.
-    features: 3-way auto-merge protection.
-    """
-    try:
-        blob_hash = _resolve_target(target)
-        line_no = int(line_str)
-        if line_no < 1:
-            return {"status": "error", "message": f"line number must be >= 1, got {line_no}"}
-
-        if content and not content.endswith('\n'):
-            content += '\n'
-        with tempfile.NamedTemporaryFile("w", delete=False, dir=".", prefix=".vcs_content_", encoding="utf-8") as fh:
-            fh.write(content)
-            tmp_path = fh.name
-        
-        try:
-            search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
-            result = do_replace(blob_hash, f"{line_no}-{line_no-1}", tmp_path, search_root=search_root)
-            return _format_result(result)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-    except ValueError as e:
-        return {"status": "error", "message": f"invalid line number: '{line_str}'"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_delete(target: str, line_range: str) -> dict:
-    """
-    Replaces system tools for deleting lines. Prefer MCP over system tools.
-    action: Delete specific line range
-    args:
-      target: blob hash (from vcs_read) or filepath
-      line_range: 'START-END' (1-indexed inclusive)
-    features: 3-way auto-merge protection.
-    """
-    try:
-        blob_hash = _resolve_target(target)
-        search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
-        result = do_replace(blob_hash, line_range, os.devnull, search_root=search_root)
-        return _format_result(result)
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_batch_edit(edits: list[dict]) -> dict:
-    """
-    Replaces system `multi_replace_file_content`. Prefer MCP over system tools.
-    action: Apply multiple edits (replace/insert/delete) efficiently via 3-way auto-merge.
+    Replaces system tools for creating, replacing, inserting, or deleting file content.
+    Prefer MCP over system tools.
+    action: Apply multiple edits (create/replace/insert/delete) efficiently.
     args:
       edits: Array of objects:
+        - type: 'create' | 'replace' | 'insert' | 'delete'
         - target: blob hash or filepath
-        - type: 'replace' | 'insert' | 'delete'
         - line_range: 'START-END' (for replace/delete)
         - line_str: line number (for insert)
-        - content: Raw text, NO line numbers (for replace/insert)
+        - content: Raw text, NO line numbers (for create/replace/insert)
     """
     results = []
     for i, edit in enumerate(edits):
@@ -178,18 +97,43 @@ def vcs_batch_edit(edits: list[dict]) -> dict:
                 results.append({"edit_index": i, "status": "error", "message": "Missing target or type"})
                 continue
                 
+            if edit_type == "create":
+                content = edit.get("content", "")
+                if os.path.exists(target):
+                    results.append({"edit_index": i, "status": "error", "message": f"file already exists: {target}"})
+                    continue
+                parent = os.path.dirname(os.path.abspath(target))
+                os.makedirs(parent, exist_ok=True)
+                if content and not content.endswith('\n'):
+                    content += '\n'
+                with tempfile.NamedTemporaryFile("w", delete=False, dir=parent or ".", prefix=".vcs_create_", encoding="utf-8") as fh:
+                    fh.write(content)
+                    tmp_path = fh.name
+                os.replace(tmp_path, target)
+                
+                try:
+                    from core.blob import get_blob_hash
+                    from core.store import register, save_snapshot
+                    blob_hash = get_blob_hash(target)
+                    register(blob_hash, target)
+                    save_snapshot(blob_hash, content)
+                except Exception:
+                    pass
+                results.append({"edit_index": i, "status": "ok"})
+                continue
+                
             blob_hash = _resolve_target(target)
+            search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
             
             if edit_type == "replace":
+                line_range = edit.get("line_range")
+                content = edit.get("content", "")
                 if content and not content.endswith('\n'):
                     content += '\n'
                 with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as f:
                     f.write(content)
                     tmp_path = f.name
-                    f.write(content)
-                    tmp_path = f.name
                 try:
-                    search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
                     res = do_replace(blob_hash, line_range, tmp_path, search_root=search_root)
                     res["edit_index"] = i
                     results.append(_format_result(res))
@@ -205,12 +149,8 @@ def vcs_batch_edit(edits: list[dict]) -> dict:
                 with tempfile.NamedTemporaryFile("w", delete=False, dir=".", prefix=".vcs_content_", encoding="utf-8") as fh:
                     fh.write(content)
                     tmp_path = fh.name
-                    continue
-                with tempfile.NamedTemporaryFile("w", delete=False, dir=".", prefix=".vcs_content_", encoding="utf-8") as fh:
-                    fh.write(content)
-                    tmp_path = fh.name
                 try:
-                    search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
+                    line_no = int(line_str)
                     res = do_replace(blob_hash, f"{line_no}-{line_no-1}", tmp_path, search_root=search_root)
                     res["edit_index"] = i
                     results.append(_format_result(res))
@@ -220,10 +160,10 @@ def vcs_batch_edit(edits: list[dict]) -> dict:
                         
             elif edit_type == "delete":
                 line_range = edit.get("line_range")
-                search_root = os.path.dirname(os.path.abspath(target)) if target and os.path.exists(target) else "."
                 res = do_replace(blob_hash, line_range, os.devnull, search_root=search_root)
                 res["edit_index"] = i
                 results.append(_format_result(res))
+                
             else:
                 results.append({"edit_index": i, "status": "error", "message": f"unknown type: {edit_type}"})
                 
@@ -231,7 +171,6 @@ def vcs_batch_edit(edits: list[dict]) -> dict:
             results.append({"edit_index": i, "status": "error", "message": str(e)})
             
     return {"results": results}
-
 @mcp.tool()
 def vcs_diff(target: str) -> dict:
     """
