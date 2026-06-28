@@ -1,0 +1,6 @@
+{
+  "name": "vcs-edit-tools",
+  "version": "1.0.0",
+  "description": "VCS Edit Tools - Hybrid CLI & MCP architecture",
+  "mcpServers": "./.mcp.json"
+}
