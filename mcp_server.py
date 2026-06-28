@@ -29,15 +29,9 @@ def _resolve_target(target: str) -> str:
     return target
 
 def _format_result(payload: dict) -> dict:
-    if "blob" in payload and isinstance(payload["blob"], str):
-        payload["blob"] = payload["blob"][:8]
-    if "new_blob" in payload and isinstance(payload["new_blob"], str):
-        payload["new_blob"] = payload["new_blob"][:8]
-    if payload.get("status") in ("ok", "auto_merged"):
-        payload.pop("path", None)
-        payload.pop("new_total_lines", None)
-    return payload
-
+    if payload.get("status") == "error":
+        return {"status": f"error - {payload.get('message', 'unknown error')}"}
+    return {"status": payload.get("status", "ok")}
 def _write_temp(content: str, dir=".") -> str:
     if content and not content.endswith('\n'):
         content += '\n'
@@ -89,7 +83,7 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
         try:
             if edit.action == "create":
                 if os.path.exists(edit.filepath):
-                    results.append({"edit_index": i, "status": "error", "message": "file already exists"})
+                    results.append({"status": "error - file already exists"})
                     continue
                 parent = os.path.dirname(os.path.abspath(edit.filepath))
                 if parent:
@@ -99,14 +93,14 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
                     content += '\n'
                 with open(edit.filepath, "w", encoding="utf-8") as f:
                     f.write(content)
-                results.append({"edit_index": i, "status": "ok", "message": f"created {edit.filepath}"})
+                results.append({"status": "ok"})
                 continue
             
             # Resolve blob for replace/insert/delete
             try:
                 blob_hash = _resolve_target(edit.filepath) if not edit.blob else _resolve_target(edit.blob)
             except Exception as e:
-                results.append({"edit_index": i, "status": "error", "message": str(e)})
+                results.append({"status": f"error - {str(e)}"})
                 continue
                 
             search_root = os.path.dirname(os.path.abspath(edit.filepath))
@@ -116,7 +110,6 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
                 tmp_path = _write_temp(edit.content, dir=search_root)
                 try:
                     res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", tmp_path, search_root=search_root)
-                    res["edit_index"] = i
                     results.append(_format_result(res))
                 finally:
                     if os.path.exists(tmp_path): os.remove(tmp_path)
@@ -125,18 +118,16 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
                 tmp_path = _write_temp(edit.content, dir=search_root)
                 try:
                     res = do_replace(blob_hash, f"{edit.line}-{edit.line-1}", tmp_path, search_root=search_root)
-                    res["edit_index"] = i
                     results.append(_format_result(res))
                 finally:
                     if os.path.exists(tmp_path): os.remove(tmp_path)
                     
             elif edit.action == "delete":
                 res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", os.devnull, search_root=search_root)
-                res["edit_index"] = i
                 results.append(_format_result(res))
                 
         except Exception as e:
-            results.append({"edit_index": i, "status": "error", "message": str(e)})
+            results.append({"status": f"error - {str(e)}"})
             
     return {"results": results}
 
