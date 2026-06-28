@@ -18,15 +18,41 @@ from typing import Literal, Optional, List
 # Initialize FastMCP Server
 mcp = FastMCP("vcs-edit")
 
-class EditOperation(BaseModel):
-    action: Literal["replace", "insert", "delete", "create"]
-    filepath: str
-    blob: Optional[str] = Field(None, description="Blob hash of the file read, prevents conflicts. Required for replace, insert, delete.")
-    start_line: Optional[int] = Field(None, description="Start line (1-indexed). Required for replace, delete.")
-    end_line: Optional[int] = Field(None, description="End line (1-indexed). Required for replace, delete.")
-    line: Optional[int] = Field(None, description="Line number for insert.")
-    content: Optional[str] = Field(None, description="New content for replace, insert, create.")
+from typing_extensions import Annotated
+from typing import Literal, Optional, List, Union
+from pydantic import BaseModel, Field
 
+class ReplaceOperation(BaseModel):
+    action: Literal["replace"]
+    filepath: str
+    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
+    start_line: int = Field(description="Start line (1-indexed).")
+    end_line: int = Field(description="End line (1-indexed).")
+    content: str = Field(description="New content for replace.")
+
+class InsertOperation(BaseModel):
+    action: Literal["insert"]
+    filepath: str
+    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
+    line: int = Field(description="Line number for insert.")
+    content: str = Field(description="New content to insert.")
+
+class DeleteOperation(BaseModel):
+    action: Literal["delete"]
+    filepath: str
+    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
+    start_line: int = Field(description="Start line (1-indexed).")
+    end_line: int = Field(description="End line (1-indexed).")
+
+class CreateOperation(BaseModel):
+    action: Literal["create"]
+    filepath: str
+    content: str = Field(description="Content of the new file.")
+
+EditOperation = Annotated[
+    Union[ReplaceOperation, InsertOperation, DeleteOperation, CreateOperation], 
+    Field(discriminator="action")
+]
 @mcp.tool()
 def vcs_batch_edit(edits: List[EditOperation]) -> str:
     """
@@ -69,23 +95,28 @@ def vcs_batch_edit(edits: List[EditOperation]) -> str:
             "type": edit.action,
             "filepath": edit.filepath,
         }
-        if edit.blob:
-            op["blob"] = edit.blob
+        blob = getattr(edit, "blob", None)
+        if blob:
+            op["blob"] = blob
             
         if edit.action in ("replace", "delete"):
-            if edit.start_line is not None and edit.end_line is not None:
-                op["line_range"] = f"{edit.start_line}-{edit.end_line}"
+            start_line = getattr(edit, "start_line", None)
+            end_line = getattr(edit, "end_line", None)
+            if start_line is not None and end_line is not None:
+                op["line_range"] = f"{start_line}-{end_line}"
             else:
                 return f"Error: replace/delete require start_line and end_line for {edit.filepath}"
         elif edit.action == "insert":
-            if edit.line is not None:
-                op["line_str"] = str(edit.line)
+            line = getattr(edit, "line", None)
+            if line is not None:
+                op["line_str"] = str(line)
             else:
                 return f"Error: insert requires line for {edit.filepath}"
+                return f"Error: insert requires line for {edit.filepath}"
                 
-        if edit.content is not None:
-            op["content"] = edit.content
-            
+        content = getattr(edit, "content", None)
+        if content is not None:
+            op["content"] = content
         cli_edits.append(op)
         
     if cli_edits:
