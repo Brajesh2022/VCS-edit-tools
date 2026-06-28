@@ -400,6 +400,42 @@ s['mcpServers']['vcs-edit'] = {
 }
 with open(p, 'w') as f: json.dump(s, f, indent=2)
 " && ok "Configured Claude Code MCP ($CLAUDE_CODE_MCP)" || warn "Failed to configure Claude Code MCP."
+
+    # 3. Antigravity Agent Config (~/.gemini/config/mcp.json)
+    mkdir -p "$HOME/.gemini/config"
+    AGY_MCP="$HOME/.gemini/config/mcp.json"
+    python3 -c "
+import json, os
+p = '$AGY_MCP'
+try:
+    with open(p) as f: s = json.load(f)
+except:
+    s = {'mcpServers': {}}
+if 'mcpServers' not in s: s['mcpServers'] = {}
+s['mcpServers']['vcs-edit'] = {
+    'command': 'python3',
+    'args': ['$INSTALL_DIR/mcp_server.py']
+}
+with open(p, 'w') as f: json.dump(s, f, indent=2)
+" && ok "Configured Antigravity MCP ($AGY_MCP)" || warn "Failed to configure Antigravity MCP."
+
+    # 4. Codex Config (~/.codex/mcp.json)
+    mkdir -p "$HOME/.codex"
+    CODEX_MCP="$HOME/.codex/mcp.json"
+    python3 -c "
+import json, os
+p = '$CODEX_MCP'
+try:
+    with open(p) as f: s = json.load(f)
+except:
+    s = {'mcpServers': {}}
+if 'mcpServers' not in s: s['mcpServers'] = {}
+s['mcpServers']['vcs-edit'] = {
+    'command': 'python3',
+    'args': ['$INSTALL_DIR/mcp_server.py']
+}
+with open(p, 'w') as f: json.dump(s, f, indent=2)
+" && ok "Configured Codex MCP ($CODEX_MCP)" || warn "Failed to configure Codex MCP."
 fi
 
 # ── Complete ──────────────────────────────────────────────────────────────────
