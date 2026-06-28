@@ -36,9 +36,35 @@ def vcs_batch_edit(edits: List[EditOperation]) -> str:
     # We will translate this into a format `vcs batch` understands
     # Since `vcs batch` natively accepts JSON, we can just shell out to the CLI
     # which ensures all the same rules, logging, and error handling apply!
-    
     cli_edits = []
+    results = []
+    cli_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
+    
     for edit in edits:
+        if edit.action == "create":
+            if edit.content is None:
+                results.append(f"Error: create requires content for {edit.filepath}")
+                continue
+            
+            # Execute create independently
+            try:
+                res = subprocess.run(
+                    [sys.executable, cli_script, "create", edit.filepath],
+                    input=edit.content,
+                    capture_output=True,
+                    text=True
+                )
+                output = res.stdout.strip()
+                if res.stderr.strip(): output += "\n" + res.stderr.strip()
+                if res.returncode != 0:
+                    results.append(f"Create Failed ({edit.filepath}):\n{output}")
+                else:
+                    results.append(f"Create OK ({edit.filepath})")
+            except Exception as e:
+                results.append(f"Create Error ({edit.filepath}): {e}")
+            continue
+
+        # Prepare batch edits for replace, insert, delete
         op = {
             "type": edit.action,
             "filepath": edit.filepath,
@@ -62,29 +88,27 @@ def vcs_batch_edit(edits: List[EditOperation]) -> str:
             
         cli_edits.append(op)
         
-    # Execute the batch command via subprocess to reuse all existing logic
-    cli_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
-    
-    try:
-        result = subprocess.run(
-            [sys.executable, cli_script, "batch"],
-            input=json.dumps(cli_edits),
-            capture_output=True,
-            text=True
-        )
-        
-        # Combine stdout and stderr for complete feedback
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n" + result.stderr.strip()
+    if cli_edits:
+        try:
+            result = subprocess.run(
+                [sys.executable, cli_script, "batch"],
+                input=json.dumps(cli_edits),
+                capture_output=True,
+                text=True
+            )
             
-        if result.returncode != 0:
-            return f"Operation Failed (Exit {result.returncode}):\n{output}"
+            output = result.stdout.strip()
+            if result.stderr.strip():
+                output += "\n" + result.stderr.strip()
+                
+            if result.returncode != 0:
+                results.append(f"Batch Failed (Exit {result.returncode}):\n{output}")
+            else:
+                results.append(output if output else "Batch OK")
+        except Exception as e:
+            results.append(f"Batch Error: {e}")
             
-        return output if output else "status: ok"
-        
-    except Exception as e:
-        return f"Internal Error: {str(e)}"
+    return "\n---\n".join(results)
 
 if __name__ == "__main__":
     mcp.run()
