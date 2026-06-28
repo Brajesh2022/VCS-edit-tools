@@ -1,145 +1,144 @@
 #!/usr/bin/env python3
-"""
-VCS Edit Tool - MCP Server
-
-This MCP server provides a single tool `vcs_batch_edit` that allows
-AI agents to perform batch edits (replace, insert, delete, create)
-using the VCS blob-hash concurrency control.
-"""
 import os
 import sys
-import json
 import tempfile
-import subprocess
-from mcp.server.fastmcp import FastMCP
+from typing import Optional, List, Literal, Union
+from typing_extensions import Annotated
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, List
 
-# Initialize FastMCP Server
+# Add the directory containing core to the Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from mcp.server.fastmcp import FastMCP
+from core.replace import replace as do_replace
+from core.blob import get_blob_hash
+from core.store import register, save_snapshot
+
 mcp = FastMCP("vcs-edit")
 
-from typing_extensions import Annotated
-from typing import Literal, Optional, List, Union
-from pydantic import BaseModel, Field
+def _resolve_target(target: str) -> str:
+    """If target is an existing filepath, snapshot it and return its current blob hash.
+    Otherwise assume it's a blob hash and return it.
+    """
+    if os.path.exists(target):
+        blob = get_blob_hash(target)
+        register(blob, target)
+        with open(target, "r", encoding="utf-8", errors="replace", newline="") as fh:
+            save_snapshot(blob, fh.read())
+        return blob
+    return target
 
+def _format_result(payload: dict) -> dict:
+    if "blob" in payload and isinstance(payload["blob"], str):
+        payload["blob"] = payload["blob"][:8]
+    if "new_blob" in payload and isinstance(payload["new_blob"], str):
+        payload["new_blob"] = payload["new_blob"][:8]
+    if payload.get("status") in ("ok", "auto_merged"):
+        payload.pop("path", None)
+        payload.pop("new_total_lines", None)
+    return payload
+
+def _write_temp(content: str, dir=".") -> str:
+    if content and not content.endswith('\n'):
+        content += '\n'
+    fd, tmp_path = tempfile.mkstemp(dir=dir, prefix=".vcs_content_")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+    return tmp_path
+
+# --- Pydantic Schemas for Nested objects ---
 class ReplaceOperation(BaseModel):
     action: Literal["replace"]
     filepath: str
-    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
-    start_line: int = Field(description="Start line (1-indexed).")
-    end_line: int = Field(description="End line (1-indexed).")
-    content: str = Field(description="New content for replace.")
+    blob: str
+    start_line: int
+    end_line: int
+    content: str
 
 class InsertOperation(BaseModel):
     action: Literal["insert"]
     filepath: str
-    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
-    line: int = Field(description="Line number for insert.")
-    content: str = Field(description="New content to insert.")
+    blob: str
+    line: int
+    content: str
 
 class DeleteOperation(BaseModel):
     action: Literal["delete"]
     filepath: str
-    blob: str = Field(description="Blob hash of the file read, prevents conflicts.")
-    start_line: int = Field(description="Start line (1-indexed).")
-    end_line: int = Field(description="End line (1-indexed).")
+    blob: str
+    start_line: int
+    end_line: int
 
 class CreateOperation(BaseModel):
     action: Literal["create"]
     filepath: str
-    content: str = Field(description="Content of the new file.")
+    content: str
 
 EditOperation = Annotated[
     Union[ReplaceOperation, InsertOperation, DeleteOperation, CreateOperation], 
     Field(discriminator="action")
 ]
+
+# --- Tools ---
 @mcp.tool()
-def vcs_batch_edit(edits: List[EditOperation]) -> str:
-    """
-    Perform atomic batch edits using VCS blob-hash concurrency control.
-    Supports replace, insert, delete, and create operations.
-    """
-    # We will translate this into a format `vcs batch` understands
-    # Since `vcs batch` natively accepts JSON, we can just shell out to the CLI
-    # which ensures all the same rules, logging, and error handling apply!
-    cli_edits = []
+def vcs_edit(edits: list[EditOperation]) -> dict:
+    """Apply multiple edits (replace/insert/delete/create) efficiently."""
     results = []
-    cli_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
     
-    for edit in edits:
-        if edit.action == "create":
-            if edit.content is None:
-                results.append(f"Error: create requires content for {edit.filepath}")
+    for i, edit in enumerate(edits):
+        try:
+            if edit.action == "create":
+                if os.path.exists(edit.filepath):
+                    results.append({"edit_index": i, "status": "error", "message": "file already exists"})
+                    continue
+                parent = os.path.dirname(os.path.abspath(edit.filepath))
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                content = edit.content
+                if content and not content.endswith('\n'):
+                    content += '\n'
+                with open(edit.filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                results.append({"edit_index": i, "status": "ok", "message": f"created {edit.filepath}"})
                 continue
             
-            # Execute create independently
+            # Resolve blob for replace/insert/delete
             try:
-                res = subprocess.run(
-                    [sys.executable, cli_script, "create", edit.filepath],
-                    input=edit.content,
-                    capture_output=True,
-                    text=True
-                )
-                output = res.stdout.strip()
-                if res.stderr.strip(): output += "\n" + res.stderr.strip()
-                if res.returncode != 0:
-                    results.append(f"Create Failed ({edit.filepath}):\n{output}")
-                else:
-                    results.append(f"Create OK ({edit.filepath})")
+                blob_hash = _resolve_target(edit.filepath) if not edit.blob else _resolve_target(edit.blob)
             except Exception as e:
-                results.append(f"Create Error ({edit.filepath}): {e}")
-            continue
-
-        # Prepare batch edits for replace, insert, delete
-        op = {
-            "type": edit.action,
-            "filepath": edit.filepath,
-        }
-        blob = getattr(edit, "blob", None)
-        if blob:
-            op["blob"] = blob
-            
-        if edit.action in ("replace", "delete"):
-            start_line = getattr(edit, "start_line", None)
-            end_line = getattr(edit, "end_line", None)
-            if start_line is not None and end_line is not None:
-                op["line_range"] = f"{start_line}-{end_line}"
-            else:
-                return f"Error: replace/delete require start_line and end_line for {edit.filepath}"
-        elif edit.action == "insert":
-            line = getattr(edit, "line", None)
-            if line is not None:
-                op["line_str"] = str(line)
-            else:
-                return f"Error: insert requires line for {edit.filepath}"
-                return f"Error: insert requires line for {edit.filepath}"
+                results.append({"edit_index": i, "status": "error", "message": str(e)})
+                continue
                 
-        content = getattr(edit, "content", None)
-        if content is not None:
-            op["content"] = content
-        cli_edits.append(op)
-        
-    if cli_edits:
-        try:
-            result = subprocess.run(
-                [sys.executable, cli_script, "batch"],
-                input=json.dumps(cli_edits),
-                capture_output=True,
-                text=True
-            )
+            search_root = os.path.dirname(os.path.abspath(edit.filepath))
+            if not search_root: search_root = "."
             
-            output = result.stdout.strip()
-            if result.stderr.strip():
-                output += "\n" + result.stderr.strip()
+            if edit.action == "replace":
+                tmp_path = _write_temp(edit.content, dir=search_root)
+                try:
+                    res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", tmp_path, search_root=search_root)
+                    res["edit_index"] = i
+                    results.append(_format_result(res))
+                finally:
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
+            
+            elif edit.action == "insert":
+                tmp_path = _write_temp(edit.content, dir=search_root)
+                try:
+                    res = do_replace(blob_hash, f"{edit.line}-{edit.line-1}", tmp_path, search_root=search_root)
+                    res["edit_index"] = i
+                    results.append(_format_result(res))
+                finally:
+                    if os.path.exists(tmp_path): os.remove(tmp_path)
+                    
+            elif edit.action == "delete":
+                res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", os.devnull, search_root=search_root)
+                res["edit_index"] = i
+                results.append(_format_result(res))
                 
-            if result.returncode != 0:
-                results.append(f"Batch Failed (Exit {result.returncode}):\n{output}")
-            else:
-                results.append(output if output else "Batch OK")
         except Exception as e:
-            results.append(f"Batch Error: {e}")
+            results.append({"edit_index": i, "status": "error", "message": str(e)})
             
-    return "\n---\n".join(results)
+    return {"results": results}
 
 if __name__ == "__main__":
     mcp.run()
