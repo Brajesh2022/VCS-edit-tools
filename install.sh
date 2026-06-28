@@ -343,6 +343,65 @@ if [[ "$SELECTED_PLUGINS" == *"codex"* || "$SELECTED_PLUGINS" == *"all"* ]]; the
     fi
 fi
 
+# ── MCP Server Configuration ──────────────────────────────────────────────────
+if [ "$NON_INTERACTIVE" = false ]; then
+    printf "  %bInstall MCP Server for Claude? [y/N]%b " "${BOLD}" "${RESET}"
+    read -r setup_mcp
+else
+    setup_mcp="y"
+fi
+
+if [[ "$setup_mcp" =~ ^[Yy]$ ]]; then
+    info "Installing MCP dependencies..."
+    pip install -U mcp pydantic >/dev/null 2>&1 || warn "Could not install mcp/pydantic. You may need to run: pip install mcp pydantic"
+    
+    # 1. Claude Desktop Config
+    CLAUDE_DESKTOP_MAC="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    CLAUDE_DESKTOP_LINUX="$HOME/.config/Claude/claude_desktop_config.json"
+    CONFIG_PATH=""
+    
+    if [ -d "$HOME/Library/Application Support/Claude" ]; then
+        CONFIG_PATH="$CLAUDE_DESKTOP_MAC"
+    elif [ -d "$HOME/.config/Claude" ]; then
+        CONFIG_PATH="$CLAUDE_DESKTOP_LINUX"
+    fi
+    
+    if [ -n "$CONFIG_PATH" ]; then
+        python3 -c "
+import json, os
+p = '$CONFIG_PATH'
+try:
+    with open(p) as f: s = json.load(f)
+except:
+    s = {'mcpServers': {}}
+if 'mcpServers' not in s: s['mcpServers'] = {}
+s['mcpServers']['vcs-edit'] = {
+    'command': 'python3',
+    'args': ['$INSTALL_DIR/mcp_server.py']
+}
+with open(p, 'w') as f: json.dump(s, f, indent=2)
+" && ok "Configured Claude Desktop MCP ($CONFIG_PATH)" || warn "Failed to configure Claude Desktop MCP."
+    fi
+
+    # 2. Claude Code Global Config (~/.claude/mcp.json)
+    mkdir -p "$HOME/.claude"
+    CLAUDE_CODE_MCP="$HOME/.claude/mcp.json"
+    python3 -c "
+import json, os
+p = '$CLAUDE_CODE_MCP'
+try:
+    with open(p) as f: s = json.load(f)
+except:
+    s = {'mcpServers': {}}
+if 'mcpServers' not in s: s['mcpServers'] = {}
+s['mcpServers']['vcs-edit'] = {
+    'command': 'python3',
+    'args': ['$INSTALL_DIR/mcp_server.py']
+}
+with open(p, 'w') as f: json.dump(s, f, indent=2)
+" && ok "Configured Claude Code MCP ($CLAUDE_CODE_MCP)" || warn "Failed to configure Claude Code MCP."
+fi
+
 # ── Complete ──────────────────────────────────────────────────────────────────
 echo ""
 printf '%b\n' "${GREEN}${BOLD}Installation Complete.${RESET}"
