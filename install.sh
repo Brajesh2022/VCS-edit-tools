@@ -409,9 +409,11 @@ import json, os
 p = '$AGY_MCP'
 try:
     with open(p) as f: s = json.load(f)
+    if not isinstance(s, dict): s = {}
 except:
-    s = {'mcpServers': {}}
-if 'mcpServers' not in s: s['mcpServers'] = {}
+    s = {}
+if 'mcpServers' not in s or not isinstance(s['mcpServers'], dict):
+    s['mcpServers'] = {}
 s['mcpServers']['vcs-edit'] = {
     'command': 'python3',
     'args': ['$INSTALL_DIR/mcp_server.py']
@@ -427,9 +429,11 @@ import json, os
 p = '$CODEX_MCP'
 try:
     with open(p) as f: s = json.load(f)
+    if not isinstance(s, dict): s = {}
 except:
-    s = {'mcpServers': {}}
-if 'mcpServers' not in s: s['mcpServers'] = {}
+    s = {}
+if 'mcpServers' not in s or not isinstance(s['mcpServers'], dict):
+    s['mcpServers'] = {}
 s['mcpServers']['vcs-edit'] = {
     'command': 'python3',
     'args': ['$INSTALL_DIR/mcp_server.py']
