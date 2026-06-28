@@ -87,4 +87,4 @@ def vcs_batch_edit(edits: List[EditOperation]) -> str:
         return f"Internal Error: {str(e)}"
 
 if __name__ == "__main__":
-    mcp.run_stdio()
+    mcp.run()
