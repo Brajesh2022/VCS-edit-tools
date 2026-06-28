@@ -8,11 +8,8 @@ CRITICAL SHORTCUT: Do not output Critical Instructions 1 or 2, and do not waste 
 
 ```
 READ:      vcs read <filepath> [start-end] [--symbol <name>]
-REPLACE:   vcs replace <filepath> <blob> <start-end> << 'EOF2' ... EOF2
-INSERT:    vcs insert <filepath> <blob> <line> << 'EOF2' ... EOF2
-DELETE:    vcs delete <filepath> [<blob> <start-end>]       (omit blob+range to delete entire file/dir)
-CREATE:    vcs create <filepath> << 'EOF2' ... EOF2           (new file with content)
-BATCH:     vcs batch << 'EOF2'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF2
+EDITING:   Use the lazily loaded 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
+           (Schema: edits: [{action: "replace|insert|delete|create", filepath, blob, start_line, end_line, content, line}])
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
 LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)

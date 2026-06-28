@@ -4,11 +4,8 @@
 
 ```
 READ:      vcs read <filepath> [start-end] [--symbol <name>]
-REPLACE:   vcs replace <filepath> <blob> <start-end> << 'EOF' ... EOF
-INSERT:    vcs insert <filepath> <blob> <line> << 'EOF' ... EOF
-DELETE:    vcs delete <filepath> [<blob> <start-end>]       (omit blob+range to delete entire file/dir)
-CREATE:    vcs create <filepath> << 'EOF' ... EOF           (new file with content)
-BATCH:     vcs batch << 'EOF'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF
+EDITING:   Use the lazily loaded 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
+           (Schema: edits: [{action: "replace|insert|delete|create", filepath, blob, start_line, end_line, content, line}])
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
 LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)
