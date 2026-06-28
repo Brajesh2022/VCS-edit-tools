@@ -81,66 +81,7 @@ EditOperation = Annotated[
 
 # --- Tools ---
 @mcp.tool()
-def vcs_replace(target: str, line_range: str, content: str) -> dict:
-    """Replace a specific line range with new content."""
-    try:
-        blob_hash = _resolve_target(target)
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
-        tmp_path = _write_temp(content, dir=search_root)
-        try:
-            result = do_replace(blob_hash, line_range, tmp_path, search_root=search_root)
-            return _format_result(result)
-        finally:
-            if os.path.exists(tmp_path): os.remove(tmp_path)
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_insert(target: str, line: int, content: str) -> dict:
-    """Insert text BEFORE a specified line."""
-    try:
-        blob_hash = _resolve_target(target)
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
-        if line < 1: return {"status": "error", "message": f"line must be >= 1"}
-        tmp_path = _write_temp(content, dir=search_root)
-        try:
-            result = do_replace(blob_hash, f"{line}-{line-1}", tmp_path, search_root=search_root)
-            return _format_result(result)
-        finally:
-            if os.path.exists(tmp_path): os.remove(tmp_path)
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_delete(target: str, line_range: str) -> dict:
-    """Delete a specific line range."""
-    try:
-        blob_hash = _resolve_target(target)
-        search_root = os.path.dirname(os.path.abspath(target)) if os.path.exists(target) else "."
-        result = do_replace(blob_hash, line_range, os.devnull, search_root=search_root)
-        return _format_result(result)
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_create(filepath: str, content: str) -> dict:
-    """Create a new file with content."""
-    try:
-        if os.path.exists(filepath):
-            return {"status": "error", "message": f"file already exists: {filepath}"}
-        parent = os.path.dirname(os.path.abspath(filepath))
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        if content and not content.endswith('\n'):
-            content += '\n'
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        return {"status": "ok", "message": f"created {filepath}"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@mcp.tool()
-def vcs_batch_edit(edits: list[EditOperation]) -> dict:
+def vcs_edit(edits: list[EditOperation]) -> dict:
     """Apply multiple edits (replace/insert/delete/create) efficiently."""
     results = []
     
