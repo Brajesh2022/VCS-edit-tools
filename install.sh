@@ -258,11 +258,17 @@ if [[ "$SELECTED_PLUGINS" == *"antigravity"* || "$SELECTED_PLUGINS" == *"all"* ]
     mkdir -p "$AGY_PLUGINS_DIR"
     if [ -d "$INSTALL_DIR/.agy" ]; then
         cp -r "$INSTALL_DIR/.agy/"* "$AGY_PLUGINS_DIR/"
+        
+        # Ensure MCP config points to absolute path of mcp_server.py
+        if [ -f "$AGY_PLUGINS_DIR/mcp_config.json" ]; then
+            sed -i "s|\"./mcp_server.py\"|\"$INSTALL_DIR/mcp_server.py\"|g" "$AGY_PLUGINS_DIR/mcp_config.json"
+        fi
+        
         chmod +x "$AGY_PLUGINS_DIR/message.sh" 2>/dev/null || true
         ok "Antigravity plugin installed"
     else
         warn "Antigravity plugin source not found in $INSTALL_DIR/.agy"
-    fi
+fi
 fi
 # ── Claude integration: just drop vcs-cli.md into ~/.claude/rules/ ───────────
 # No hooks, no plugins. Claude Code automatically loads rules files from
