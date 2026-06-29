@@ -10,11 +10,11 @@ fallback when `git ls-files` can't find a file (untracked, modified, etc.).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Optional
-
 
 # Maximum number of blob entries to keep per filepath in the registry.
 # When this limit is exceeded for a given file, the OLDEST entries for
@@ -65,8 +65,17 @@ def find_repo_root(start: str = ".") -> str:
     return str(start_path)
 
 
+def _repo_storage_dir(repo_root: str) -> Path:
+    home = Path.home()
+    abs_path = str(Path(repo_root).resolve())
+    path_hash = hashlib.md5(abs_path.encode("utf-8")).hexdigest()
+    d = home / ".vcs" / path_hash
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _store_path(repo_root: str) -> Path:
-    return Path(repo_root) / ".vcs_store.json"
+    return _repo_storage_dir(repo_root) / ".vcs_store.json"
 
 
 def load_store(repo_root: str) -> dict:
@@ -251,7 +260,7 @@ def clear_store(repo_root: Optional[str] = None) -> None:
     if repo_root is None:
         repo_root = find_repo_root()
     _save_store(repo_root, {"blobs": {}, "_order": []})
-    snap_dir = Path(repo_root) / ".vcs_snapshots"
+    snap_dir = _snapshots_dir(repo_root)
     if snap_dir.exists():
         shutil.rmtree(snap_dir, ignore_errors=True)
 
@@ -319,7 +328,7 @@ def gc_store(repo_root: Optional[str] = None, prune_stale: bool = True,
 # ---------------------------------------------------------------------------
 
 def _snapshots_dir(repo_root: str) -> Path:
-    d = Path(repo_root) / ".vcs_snapshots"
+    d = _repo_storage_dir(repo_root) / ".vcs_snapshots"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
