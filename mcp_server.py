@@ -15,6 +15,8 @@ from core.blob import get_blob_hash
 from core.store import register, save_snapshot
 
 mcp = FastMCP("vcs-edit")
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 
 def _resolve_target(target: str) -> str:
     """If target is an existing filepath, snapshot it and return its current blob hash.
@@ -72,9 +74,16 @@ EditOperation = Annotated[
 
 # --- Tools ---
 @mcp.tool()
-def vcs_edit(edits: list[EditOperation]) -> dict:
+def vcs_edit(edits: list[EditOperation], cwd: Optional[str] = None) -> dict:
     """Apply multiple edits (replace/insert/delete/create) efficiently."""
     results = []
+    
+    if not cwd:
+        cwd = REPO_ROOT
+        
+    for edit in edits:
+        if not os.path.isabs(edit.filepath):
+            edit.filepath = os.path.join(cwd, edit.filepath)
     
     for i, edit in enumerate(edits):
         try:
