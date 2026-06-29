@@ -279,14 +279,24 @@ if [[ "$SELECTED_PLUGINS" == *"claude"* || "$SELECTED_PLUGINS" == *"all"* ]]; th
     if [ -f "$INSTALL_DIR/.claude/vcs-cli.md" ]; then
         cp -f "$INSTALL_DIR/.claude/vcs-cli.md" "$CLAUDE_RULES_DIR/vcs-cli.md"
         ok "Claude rules installed at $CLAUDE_RULES_DIR/vcs-cli.md"
+    fi
 
+    if [ -f "$INSTALL_DIR/.claude/plugin.json" ]; then
+        CLAUDE_PLUGIN_DIR="$HOME/.claude/plugins/vcs-edit"
+        mkdir -p "$CLAUDE_PLUGIN_DIR/.claude-plugin"
+        cp -f "$INSTALL_DIR/.claude/plugin.json" "$CLAUDE_PLUGIN_DIR/.claude-plugin/plugin.json"
+        if [ -f "$INSTALL_DIR/.mcp.json" ]; then
+            cp -f "$INSTALL_DIR/.mcp.json" "$CLAUDE_PLUGIN_DIR/.mcp.json"
+            sed -i "s|\"./mcp_server.py\"|\"$INSTALL_DIR/mcp_server.py\"|g" "$CLAUDE_PLUGIN_DIR/.mcp.json"
+        fi
+        ok "Claude plugin installed at $CLAUDE_PLUGIN_DIR"
+    else
         # Clean up legacy hooks/payload from previous installs (v1 had a hooks system).
         LEGACY_PLUGIN_DIR="$HOME/.claude/plugins/vcs-edit"
         if [ -d "$LEGACY_PLUGIN_DIR" ]; then
             rm -rf "$LEGACY_PLUGIN_DIR"
             info "Removed legacy Claude hooks/plugins from $LEGACY_PLUGIN_DIR"
         fi
-
         # Remove the UserPromptSubmit hook entry from settings.json if it points at vcs-edit.
         if [ -f "$HOME/.claude/settings.json" ]; then
             python3 -c "
@@ -314,8 +324,6 @@ if changed:
     print('    cleaned legacy hook from ~/.claude/settings.json')
 " || true
         fi
-    else
-        warn "Claude rules source not found in $INSTALL_DIR/.claude/vcs-cli.md"
     fi
 fi
 
