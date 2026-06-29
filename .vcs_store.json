@@ -95,9 +95,22 @@
     [
       "d3083c2976c8207111f7cb5cd5d91fdf635c5d23",
       "mcp_server.py"
+    ],
+    [
+      "029b4da39727a27a628a43cc42438658aa4270ae",
+      "install.sh"
+    ],
+    [
+      "f101a166ccccb89c7cb6ae34fdf0494154338ab0",
+      "core/store.py"
+    ],
+    [
+      "30f25074b0d9b0d8a1fae754035a5f599cd4e9e7",
+      "cli.py"
     ]
   ],
   "blobs": {
+    "029b4da39727a27a628a43cc42438658aa4270ae": "install.sh",
     "093338ede0be2141a4e1abbf85660cc67e61a2c0": ".agy/payload.json",
     "10473ac4d4ea27ccc82a7330c3a4676058c38aa6": "install.sh",
     "19abad84cb2a9bb2454de2758786f887eb7c1a18": ".agy/hooks.json",
@@ -105,6 +118,7 @@
     "2155b964b5408615b18305183e2957ec1e2c45b5": ".agy/instructions.md",
     "21f4fe34b4c40f38bb6194bdba20f3f570e2a7a7": ".agy/hooks.json",
     "2abf4eb180784143c7fec7002fd604c9ebe227aa": "install.sh",
+    "30f25074b0d9b0d8a1fae754035a5f599cd4e9e7": "cli.py",
     "39c61dc1d68686f124e1657ec8a84878f762b153": "mcp_server.py",
     "4085738cf8e798c79f461bd9239376378abac8e5": "list.py",
     "4cb5ac8df93e7c12cce71678f12bf5383a62665f": "tests/test_cli.py",
@@ -122,6 +136,7 @@
     "d0f4e5f3d4df1028e165c29be7ba6189b68258ce": "cli.py",
     "d3083c2976c8207111f7cb5cd5d91fdf635c5d23": "mcp_server.py",
     "ea80f2b845722b7284de87254093a93cd03b824f": "list.py",
+    "f101a166ccccb89c7cb6ae34fdf0494154338ab0": "core/store.py",
     "f119752ef2ec2cae2f1061648d026c96465701b3": "list.py",
     "f27896f28e59793c038248db4ef364da785ad186": "list.py"
   }

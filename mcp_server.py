@@ -79,8 +79,14 @@ def vcs_edit(edits: list[EditOperation], cwd: Optional[str] = None) -> dict:
     results = []
     
     if not cwd:
-        cwd = REPO_ROOT
-        
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".vcs_cwd"), "r") as _f:
+                cwd = _f.read().strip()
+        except Exception:
+            pass
+        if not cwd or not os.path.isdir(cwd):
+            cwd = REPO_ROOT
+            
     for edit in edits:
         if not os.path.isabs(edit.filepath):
             edit.filepath = os.path.join(cwd, edit.filepath)

@@ -51,6 +51,13 @@ from core.store import (
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+try:
+    with open(os.path.join(os.path.expanduser("~"), ".vcs_cwd"), "w") as _f:
+        _f.write(os.getcwd())
+except Exception:
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
