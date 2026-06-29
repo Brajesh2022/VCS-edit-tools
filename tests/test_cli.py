@@ -770,19 +770,19 @@ def test_register_caps_blobs_per_file_at_100(tmp_repo):
     """
     import sys
     sys.path.insert(0, str(tmp_repo.parent))  # ensure imports work
-    from core.store import register, _load_store, MAX_BLOBS_PER_FILE, _find_repo_root
+    from core.store import register, load_store, MAX_BLOBS_PER_FILE, find_repo_root
 
     f = tmp_repo / "many_blobs.txt"
     f.write_text("initial\n")
 
     # Register 110 different blob hashes for the same file (simulating 110
     # successive edits, each creating a new blob)
-    repo_root = _find_repo_root(str(tmp_repo))
+    repo_root = find_repo_root(str(tmp_repo))
     for i in range(110):
         fake_hash = f"{'a' * 39}{i:01x}"[-40:]  # 40-char hex hash, unique per i
         register(fake_hash, str(f), repo_root=repo_root)
 
-    data = _load_store(repo_root)
+    data = load_store(repo_root)
     blobs_for_file = [h for h, p in data["blobs"].items() if p == "many_blobs.txt"]
     assert len(blobs_for_file) <= MAX_BLOBS_PER_FILE, (
         f"expected <= {MAX_BLOBS_PER_FILE} blobs for the file, got {len(blobs_for_file)}"
@@ -794,32 +794,32 @@ def test_register_does_not_store_short_prefix_as_separate_key(tmp_repo):
     should NOT result in two separate keys. The second call should
     consolidate to the full hash, removing the short prefix entry.
     """
-    from core.store import register, _load_store, _find_repo_root
+    from core.store import register, load_store, find_repo_root
 
     f = tmp_repo / "short.txt"
     f.write_text("content\n")
-    repo_root = _find_repo_root(str(tmp_repo))
+    repo_root = find_repo_root(str(tmp_repo))
 
     full_hash = "abcdef1234567890abcdef1234567890abcdef12"  # 40 chars
     short_prefix = full_hash[:8]
 
     # Step 1: register the short prefix (simulates agent passing short blob)
     register(short_prefix, str(f), repo_root=repo_root)
-    data_after_short = _load_store(repo_root)
+    data_after_short = load_store(repo_root)
     # Short prefix is stored (no full hash known yet — this is correct)
     assert short_prefix in data_after_short["blobs"]
 
     # Step 2: register the full hash (simulates vcs read registering the
     # full hash for the same file)
     register(full_hash, str(f), repo_root=repo_root)
-    data_after_full = _load_store(repo_root)
+    data_after_full = load_store(repo_root)
     # Full hash should be present
     assert full_hash in data_after_full["blobs"]
     # The short prefix may still be present (it's not auto-removed) BUT
     # when we now register the short prefix AGAIN, it should resolve to
     # the full hash and NOT create a duplicate.
     register(short_prefix, str(f), repo_root=repo_root)
-    data_after_reregister = _load_store(repo_root)
+    data_after_reregister = load_store(repo_root)
     # The short prefix should NOT have been added as a new key — it should
     # have resolved to the existing full hash.
     short_count = sum(1 for h in data_after_reregister["blobs"].keys()
@@ -835,7 +835,7 @@ def test_deleted_files_get_pruned_by_gc(tmp_repo):
     """BUG-4 + OPT-3: `vcs gc` should remove registry entries for files
     that no longer exist on disk.
     """
-    from core.store import register, _load_store, gc_store, _find_repo_root
+    from core.store import register, load_store, gc_store, find_repo_root
 
     # Create + register a file
     f = tmp_repo / "doomed.txt"
@@ -843,8 +843,8 @@ def test_deleted_files_get_pruned_by_gc(tmp_repo):
     blob = _read_and_get_blob(f)  # registers via read_file
 
     # Verify it's in the registry
-    repo_root = _find_repo_root(str(tmp_repo))
-    data_before = _load_store(repo_root)
+    repo_root = find_repo_root(str(tmp_repo))
+    data_before = load_store(repo_root)
     assert any(p == "doomed.txt" for p in data_before["blobs"].values())
 
     # Delete the file externally
@@ -856,7 +856,7 @@ def test_deleted_files_get_pruned_by_gc(tmp_repo):
     assert result["stale_entries"] >= 1
 
     # Verify the entry is gone
-    data_after = _load_store(repo_root)
+    data_after = load_store(repo_root)
     assert not any(p == "doomed.txt" for p in data_after["blobs"].values())
 
 
@@ -864,9 +864,9 @@ def test_gc_removes_orphan_snapshots(tmp_repo):
     """BUG-4 + OPT-3: `vcs gc` should remove orphan snapshot files (those
     with no corresponding registry entry).
     """
-    from core.store import _snapshots_dir, gc_store, _find_repo_root
+    from core.store import _snapshots_dir, gc_store, find_repo_root
 
-    repo_root = _find_repo_root(str(tmp_repo))
+    repo_root = find_repo_root(str(tmp_repo))
     snap_dir = _snapshots_dir(repo_root)
 
     # Create an orphan snapshot file (no registry entry for it)

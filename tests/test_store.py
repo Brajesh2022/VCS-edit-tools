@@ -5,7 +5,7 @@ from pathlib import Path
 from core.store import (
     register, lookup, resolve_path,
     save_snapshot, load_snapshot, clear_store,
-    _find_repo_root, _store_path,
+    find_repo_root, _store_path,
 )
 
 
@@ -92,9 +92,9 @@ def test_store_json_persists_across_calls(tmp_repo):
     assert "persistent_hash" in data["blobs"]
 
 
-def test_find_repo_root_finds_git_dir(tmp_repo):
+def testfind_repo_root_finds_git_dir(tmp_repo):
     # tmp_repo fixture sets up a .git directory
     nested = tmp_repo / "deep" / "nested"
     nested.mkdir(parents=True)
-    root = _find_repo_root(str(nested))
+    root = find_repo_root(str(nested))
     assert Path(root).resolve() == tmp_repo.resolve()
