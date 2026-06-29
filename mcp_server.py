@@ -45,8 +45,7 @@ class ReplaceOperation(BaseModel):
     action: Literal["replace"]
     filepath: str
     blob: str
-    start_line: int
-    end_line: int
+    range: str
     content: str
 
 class InsertOperation(BaseModel):
@@ -59,10 +58,8 @@ class InsertOperation(BaseModel):
 class DeleteOperation(BaseModel):
     action: Literal["delete"]
     filepath: str
-    blob: str
-    start_line: int
-    end_line: int
-
+    blob: Optional[str] = None
+    range: Optional[str] = None
 class CreateOperation(BaseModel):
     action: Literal["create"]
     filepath: str
@@ -95,8 +92,16 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
                     f.write(content)
                 results.append({"status": "ok"})
                 continue
+                
+            if edit.action == "delete" and not edit.range:
+                if os.path.exists(edit.filepath):
+                    os.remove(edit.filepath)
+                    results.append({"status": "ok"})
+                else:
+                    results.append({"status": "error - file not found"})
+                continue
             
-            # Resolve blob for replace/insert/delete
+            # Resolve blob for replace/insert/delete(partial)
             try:
                 blob_hash = _resolve_target(edit.filepath) if not edit.blob else _resolve_target(edit.blob)
             except Exception as e:
@@ -109,7 +114,7 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
             if edit.action == "replace":
                 tmp_path = _write_temp(edit.content, dir=search_root)
                 try:
-                    res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", tmp_path, search_root=search_root)
+                    res = do_replace(blob_hash, edit.range, tmp_path, search_root=search_root)
                     results.append(_format_result(res))
                 finally:
                     if os.path.exists(tmp_path): os.remove(tmp_path)
@@ -123,7 +128,7 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
                     if os.path.exists(tmp_path): os.remove(tmp_path)
                     
             elif edit.action == "delete":
-                res = do_replace(blob_hash, f"{edit.start_line}-{edit.end_line}", os.devnull, search_root=search_root)
+                res = do_replace(blob_hash, edit.range, os.devnull, search_root=search_root)
                 results.append(_format_result(res))
                 
         except Exception as e:

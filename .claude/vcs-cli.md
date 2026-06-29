@@ -4,7 +4,12 @@
 
 ```
 READ:      vcs read <filepath> [start-end] [--symbol <name>]
-EDITING:   Use the lazily loaded 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
+EDITING (BATCH/SINGLE): Use the 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
+           Schema: edits: list of operations
+           - replace: {action: "replace", filepath, blob, range (e.g. "20-100"), content}
+           - insert: {action: "insert", filepath, blob, line, content}
+           - delete: {action: "delete", filepath} (or pass range/blob for partial delete)
+           - create: {action: "create", filepath, content}
            (Schema: edits: [{action: "replace|insert|delete|create", filepath, blob, start_line, end_line, content, line}])
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
