@@ -179,66 +179,68 @@ def skeletonize_python(path: Path) -> tuple:
     return result, total_lines, path.stat().st_size
 
 
-# === JS/TS regex-based skeletonization ===
+# === JS/TS regex-based skeletonizat# Patterns that match the START of a function/class/etc.
+REGEX_PATTERNS = {
+    'js_ts': [
+        r'^\s*(export\s+)?(default\s+)?(async\s+)?function\s+\w+',
+        r'^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(\([^)]*\)|\w+)\s*=>',
+        r'^\s*(export\s+)?(default\s+)?(abstract\s+)?class\s+\w+',
+        r'^\s+(public|private|protected|static|async|get|set|\s)*\w+\s*\([^)]*\)\s*({|=>)',
+        r'^\s*(export\s+)?(interface|type)\s+\w+',
+        r'^\s*(export\s+)?(const|let|var)\s+\w+\s*:\s*React\.',
+    ],
+    'rust': [
+        r'^\s*(pub\s+)?fn\s+\w+',
+        r'^\s*(pub\s+)?impl\s+\w+',
+        r'^\s*(pub\s+)?struct\s+\w+',
+        r'^\s*(pub\s+)?enum\s+\w+',
+        r'^\s*(pub\s+)?trait\s+\w+',
+    ],
+    'go': [
+        r'^\s*func\s+\w+',
+        r'^\s*func\s+\([^)]+\)\s+\w+',
+        r'^\s*type\s+\w+',
+    ],
+    'java_kt_cs': [
+        r'^\s*(public|private|protected|internal)?\s*(static|final|abstract|sealed)?\s*(class|interface|record|enum|object|struct)\s+\w+',
+        r'^\s*(public|private|protected|internal)?\s*(static|final|abstract|override|virtual)?\s*\w+(?:<[^>]+>)?\s+\w+\s*\(',
+        r'^\s*(fun)\s+\w+', # Kotlin function
+    ],
+    'ruby': [
+        r'^\s*def\s+\w+',
+        r'^\s*class\s+\w+',
+        r'^\s*module\s+\w+',
+    ],
+}
 
-# Patterns that match the START of a function/class/etc. These mark the line
-# as "show this" — the body until the matching closing brace is collapsed.
-JS_SIGNATURE_PATTERNS = [
-    # function declarations: function foo(args) {
-    r'^\s*(export\s+)?(default\s+)?(async\s+)?function\s+\w+',
-    # arrow function assignments: const foo = (args) => {
-    r'^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(\([^)]*\)|\w+)\s*=>',
-    # class declarations
-    r'^\s*(export\s+)?(default\s+)?(abstract\s+)?class\s+\w+',
-    # method definitions inside classes (indentation-based heuristic)
-    r'^\s+(public|private|protected|static|async|get|set|\s)*\w+\s*\([^)]*\)\s*({|=>)',
-    # TypeScript interface/type declarations
-    r'^\s*(export\s+)?(interface|type)\s+\w+',
-    # React component declarations: const Foo: React.FC = () => {
-    r'^\s*(export\s+)?(const|let|var)\s+\w+\s*:\s*React\.',
-]
-
-def skeletonize_jsts(path: Path) -> tuple:
+def skeletonize_regex(path: Path, patterns: list[str]) -> tuple:
     """
-    Regex-based skeleton for JS/TS files. Shows:
-    - All import lines
-    - All comment lines (// and /* */)
-    - Function/class/method/interface signature lines (first line only)
-    - Blank lines
-    Collapses everything else to `// ... N lines ...` markers.
-
-    Returns (skeleton, total_lines, total_bytes).
+    Regex-based skeleton for supported languages.
     """
     import re
 
     source = path.read_text(encoding='utf-8', errors='replace')
     lines = source.splitlines()
     total_lines = len(lines)
-    signature_regexes = [re.compile(p) for p in JS_SIGNATURE_PATTERNS]
+    signature_regexes = [re.compile(p) for p in patterns]
 
     show_lines = set()
 
     for i, line in enumerate(lines, start=1):
         stripped = line.strip()
         # Imports
-        if stripped.startswith('import ') or stripped.startswith('export '):
-            # Show import lines (and continuation lines — heuristic: any line
-            # that's part of an import block until we hit a semicolon)
+        if stripped.startswith('import ') or stripped.startswith('export ') or stripped.startswith('use ') or stripped.startswith('package '):
             show_lines.add(i)
-            # If the import doesn't end with a semicolon, show the next few
-            # lines until we find one.
             if not stripped.endswith(';') and not stripped.endswith('from'):
                 j = i + 1
                 while j <= len(lines) and ';' not in lines[j - 1]:
                     show_lines.add(j)
                     j += 1
-                    if j - i > 20:  # safety limit
-                        break
-                if j <= len(lines):
-                    show_lines.add(j)
+                    if j - i > 20: break
+                if j <= len(lines): show_lines.add(j)
             continue
         # Comments
-        if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+        if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*') or stripped.startswith('#'):
             show_lines.add(i)
             continue
         # Blank lines
@@ -251,7 +253,6 @@ def skeletonize_jsts(path: Path) -> tuple:
                 show_lines.add(i)
                 break
 
-    # Build the skeleton
     result = []
     i = 1
     while i <= len(lines):
@@ -263,15 +264,13 @@ def skeletonize_jsts(path: Path) -> tuple:
             while i <= len(lines) and i not in show_lines:
                 i += 1
             hidden_count = i - hidden_start
-            # Preserve indentation (Gemini review suggestion)
             first_hidden = lines[hidden_start - 1] if hidden_start <= len(lines) else ""
             indent = ""
             for ch in first_hidden:
-                if ch in ' \t':
-                    indent += ch
-                else:
-                    break
-            result.append((hidden_start, f"{indent}// ... {hidden_count} lines ..."))
+                if ch in ' \t': indent += ch
+                else: break
+            marker = "#" if path.suffix == '.rb' else "//"
+            result.append((hidden_start, f"{indent}{marker} ... {hidden_count} lines ..."))
 
     return result, total_lines, path.stat().st_size
 
@@ -798,7 +797,15 @@ def generate_skeleton(path: Path, start: int = None, end: int = None) -> dict:
         elif suffix == '.py':
             skeleton, total_lines, total_bytes = skeletonize_python(path)
         elif suffix in ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'):
-            skeleton, total_lines, total_bytes = skeletonize_jsts(path)
+            skeleton, total_lines, total_bytes = skeletonize_regex(path, REGEX_PATTERNS['js_ts'])
+        elif suffix == '.rs':
+            skeleton, total_lines, total_bytes = skeletonize_regex(path, REGEX_PATTERNS['rust'])
+        elif suffix == '.go':
+            skeleton, total_lines, total_bytes = skeletonize_regex(path, REGEX_PATTERNS['go'])
+        elif suffix in ('.java', '.kt', '.cs'):
+            skeleton, total_lines, total_bytes = skeletonize_regex(path, REGEX_PATTERNS['java_kt_cs'])
+        elif suffix == '.rb':
+            skeleton, total_lines, total_bytes = skeletonize_regex(path, REGEX_PATTERNS['ruby'])
         elif suffix == '.md':
             skeleton, total_lines, total_bytes = skeletonize_markdown(path)
         elif suffix == '.json':

@@ -50,7 +50,7 @@ class BlobMismatchError(LookupError):
         super().__init__(message)
 
 
-def _find_repo_root(start: str = ".") -> str:
+def find_repo_root(start: str = ".") -> str:
     """Walk up from `start` to find a directory containing `.git`.
 
     Falls back to `start` (absolute) if no git repo is found.
@@ -69,7 +69,7 @@ def _store_path(repo_root: str) -> Path:
     return Path(repo_root) / ".vcs_store.json"
 
 
-def _load_store(repo_root: str) -> dict:
+def load_store(repo_root: str) -> dict:
     """Load the registry.  Schema: { "blobs": { "<hash>": "<path>" } }"""
     path = _store_path(repo_root)
     if not path.exists():
@@ -113,7 +113,7 @@ def register(blob_hash: str, filepath: str, repo_root: Optional[str] = None) -> 
     when pruning. This is O(N) per insert but N is bounded by the cap.
     """
     if repo_root is None:
-        repo_root = _find_repo_root(os.path.dirname(os.path.abspath(filepath)))
+        repo_root = find_repo_root(os.path.dirname(os.path.abspath(filepath)))
 
     abs_path = os.path.abspath(filepath)
     try:
@@ -131,7 +131,7 @@ def register(blob_hash: str, filepath: str, repo_root: Optional[str] = None) -> 
     # separate keys, creating orphan snapshot files.
     raw_hash = blob_hash.lower()
 
-    data = _load_store(repo_root)
+    data = load_store(repo_root)
     blobs = data.setdefault("blobs", {})
     order = data.setdefault("_order", [])  # list of (hash, filepath) in insertion order
 
@@ -203,9 +203,9 @@ def lookup(blob_hash: str, repo_root: Optional[str] = None) -> Optional[str]:
     blob_hash = blob_hash.lower()
 
     if repo_root is None:
-        repo_root = _find_repo_root()
+        repo_root = find_repo_root()
 
-    data = _load_store(repo_root)
+    data = load_store(repo_root)
     entry = data["blobs"].get(blob_hash)
     if entry:
         return entry
@@ -230,7 +230,7 @@ def resolve_path(blob_hash: str, search_root: str = ".") -> Optional[str]:
     # 1. Try the registry — if we have a mapping, return it (don't re-verify
     #    the current hash; the file may legitimately have changed, which is
     #    exactly the conflict case replace.py needs to detect).
-    repo_root = _find_repo_root(search_root)
+    repo_root = find_repo_root(search_root)
     registered = lookup(blob_hash, repo_root=repo_root)
     if registered:
         candidate = registered if os.path.isabs(registered) else os.path.join(repo_root, registered)
@@ -249,7 +249,7 @@ def clear_store(repo_root: Optional[str] = None) -> None:
     """Wipe the registry AND snapshot store (used by tests)."""
     import shutil
     if repo_root is None:
-        repo_root = _find_repo_root()
+        repo_root = find_repo_root()
     _save_store(repo_root, {"blobs": {}, "_order": []})
     snap_dir = Path(repo_root) / ".vcs_snapshots"
     if snap_dir.exists():
@@ -274,8 +274,8 @@ def gc_store(repo_root: Optional[str] = None, prune_stale: bool = True,
     Returns: {"stale_entries": N, "orphan_snapshots": M, "total_remaining": K}
     """
     if repo_root is None:
-        repo_root = _find_repo_root()
-    data = _load_store(repo_root)
+        repo_root = find_repo_root()
+    data = load_store(repo_root)
     blobs = data.get("blobs", {})
     order = data.get("_order", [])
 
@@ -337,12 +337,12 @@ def save_snapshot(blob_hash: str, content: str, repo_root: Optional[str] = None)
     then save_snapshot() with the prefix).
     """
     if repo_root is None:
-        repo_root = _find_repo_root()
+        repo_root = find_repo_root()
     blob_lower = blob_hash.lower()
 
     # If it's a short prefix, try to resolve to the full hash
     if len(blob_lower) < 40:
-        data = _load_store(repo_root)
+        data = load_store(repo_root)
         for existing_hash in data.get("blobs", {}).keys():
             if existing_hash.startswith(blob_lower):
                 blob_lower = existing_hash
@@ -359,7 +359,7 @@ def load_snapshot(blob_hash: str, repo_root: Optional[str] = None) -> Optional[s
     Supports short-prefix lookup.
     """
     if repo_root is None:
-        repo_root = _find_repo_root()
+        repo_root = find_repo_root()
     blob_hash = blob_hash.lower()
     snap_dir = _snapshots_dir(repo_root)
 

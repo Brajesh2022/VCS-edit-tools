@@ -393,7 +393,7 @@ def _dir_contains_matching_files(path: Path, filter_pattern: str, max_depth: int
     return False
 
 
-def main():
+def main(args=None):
     parser = argparse.ArgumentParser(
         description="vcs tree — depth-limited, .gitignore-aware directory tree."
     )
@@ -406,7 +406,7 @@ def main():
                         help='Show only the normally-hidden directories (with counts)')
     parser.add_argument('--filter', type=str, default=None,
                         help='Glob filter — only show paths leading to matching files (e.g. "*.jsx")')
-    args = parser.parse_args()
+    args = parser.parse_args(args)
 
     path = Path(args.path)
     if not path.exists():

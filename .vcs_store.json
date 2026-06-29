@@ -75,6 +75,10 @@
     [
       "4cb5ac8df93e7c12cce71678f12bf5383a62665f",
       "tests/test_cli.py"
+    ],
+    [
+      "30f25074b0d9b0d8a1fae754035a5f599cd4e9e7",
+      "cli.py"
     ]
   ],
   "blobs": {
@@ -84,6 +88,7 @@
     "1bbeac426330dbd4330930f10bf06f11b0539633": "list.py",
     "21f4fe34b4c40f38bb6194bdba20f3f570e2a7a7": ".agy/hooks.json",
     "2abf4eb180784143c7fec7002fd604c9ebe227aa": "install.sh",
+    "30f25074b0d9b0d8a1fae754035a5f599cd4e9e7": "cli.py",
     "4085738cf8e798c79f461bd9239376378abac8e5": "list.py",
     "4cb5ac8df93e7c12cce71678f12bf5383a62665f": "tests/test_cli.py",
     "6ca3dacffe569297d1ebd7261e456b50c9c5112b": "cli.py",
