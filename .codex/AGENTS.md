@@ -10,7 +10,6 @@ EDITING (BATCH/SINGLE): Use the 'vcs_edit' MCP tool (server: vcs-edit) for all m
            - insert: {action: "insert", filepath, blob, line, content}
            - delete: {action: "delete", filepath} (or pass range/blob for partial delete)
            - create: {action: "create", filepath, content}
-           (Schema: edits: [{action: "replace|insert|delete|create", filepath, blob, start_line, end_line, content, line}])
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
 LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)
@@ -18,7 +17,6 @@ GREP:      vcs grep <query> [path] [-i]                     (Outputs blob hash f
 FMT:       vcs fmt [--check] [path]                        (auto-format code syntax)
 TEST:      vcs test <cmd> [path]
 STATUS:    vcs status [--prune]                          (list blobs, or prune stale entries)
-
 ```
 
 ## Critical Rules
