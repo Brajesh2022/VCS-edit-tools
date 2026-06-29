@@ -66,10 +66,13 @@ def find_repo_root(start: str = ".") -> str:
 
 
 def _repo_storage_dir(repo_root: str) -> Path:
-    home = Path.home()
-    abs_path = str(Path(repo_root).resolve())
-    path_hash = hashlib.md5(abs_path.encode("utf-8")).hexdigest()
-    d = home / ".vcs" / path_hash
+    try:
+        home = Path.home()
+        abs_path = str(Path(repo_root).resolve())
+        path_hash = hashlib.sha256(abs_path.encode("utf-8")).hexdigest()[:32]
+        d = home / ".vcs" / path_hash
+    except (RuntimeError, KeyError):
+        d = Path(repo_root)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -260,7 +263,7 @@ def clear_store(repo_root: Optional[str] = None) -> None:
     if repo_root is None:
         repo_root = find_repo_root()
     _save_store(repo_root, {"blobs": {}, "_order": []})
-    snap_dir = _snapshots_dir(repo_root)
+    snap_dir = _repo_storage_dir(repo_root) / ".vcs_snapshots"
     if snap_dir.exists():
         shutil.rmtree(snap_dir, ignore_errors=True)
 
