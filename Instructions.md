@@ -8,12 +8,15 @@ DELETE:    vcs delete <filepath> [<blob> <start-end>]       (omit blob+range to 
 CREATE:    vcs create <filepath> << 'EOF' ... EOF           (new file with content)
 BATCH:     vcs batch << 'EOF'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF
 DIFF:      vcs diff <filepath> <blob>
-SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
-LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)
+SKELETON:  vcs skeleton <filepath> [start-end]              (Returns structural skeleton for JS/TS/Py/Rust/Go/Java/Rb/Markdowns etc)
+LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools. Alias: tree)
+TREE:      vcs tree [path] [--depth N] [--all]              (Alias for vcs list)
 GREP:      vcs grep <query> [path] [-i]                     (Outputs blob hash for instant edits)
-FMT:       vcs fmt [--check] [path]                        (auto-format code syntax)
+FMT:       vcs fmt [--check] [path]                         (auto-format code syntax)
 TEST:      vcs test <cmd> [path]
-STATUS:    vcs status [--prune]                          (list blobs, or prune stale entries)
+STATUS:    vcs status [--prune]                             (list blobs, or prune stale entries)
+UNDO:      vcs undo <filepath> [blob]                       (Blob is optional, otherwise it would back to last change)
+HISTORY:   vcs history <filepath>                           (List previous blobs for a file)
 
 ```
 
