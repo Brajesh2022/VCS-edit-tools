@@ -136,6 +136,23 @@ else
     spinner $! "Cloning repository..." || die "Failed to clone repo."
 fi
 
+# ── Inject Instructions ───────────────────────────────────────────────────────
+if [ -f "$INSTALL_DIR/Instructions.md" ]; then
+    for md_file in "$INSTALL_DIR/.agy/instructions.md" "$INSTALL_DIR/.claude/vcs-cli.md" "$INSTALL_DIR/.codex/AGENTS.md"; do
+        if [ -f "$md_file" ] && grep -q "<<Instructions>>" "$md_file"; then
+            awk '
+            /<<Instructions>>/ {
+                while ((getline line < "'"$INSTALL_DIR/Instructions.md"'") > 0)
+                    print line
+                close("'"$INSTALL_DIR/Instructions.md"'")
+                next
+            }
+            { print }
+            ' "$md_file" > "${md_file}.tmp" && mv "${md_file}.tmp" "$md_file"
+        fi
+    done
+fi
+
 # ── Install ───────────────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
 chmod +x "$INSTALL_DIR/vcs"
