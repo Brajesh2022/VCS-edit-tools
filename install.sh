@@ -29,17 +29,21 @@ spinner() {
   local pid=$1
   local msg=$2
   local spinstr='\|/-'
+  local ticks=0
   printf "\033[?25l" # Hide cursor
   while kill -0 "$pid" 2>/dev/null; do
     local temp=${spinstr#?}
-    printf "\r\033[K %b[%c]%b %b%s%b" "$CYAN" "$spinstr" "$RESET" "$DIM" "$msg" "$RESET"
+    local pct=$(( (ticks * 100) / (ticks + 50) ))
+    if [ "$pct" -gt 99 ]; then pct=99; fi
+    printf "\r\033[K %b[%c]%b %b%s%b %d%%\n" "$CYAN" "$spinstr" "$RESET" "$DIM" "$msg" "$RESET" "$pct" | tr -d '\n'
     local spinstr=$temp${spinstr%"$temp"}
     sleep 0.1
+    ticks=$((ticks + 1))
   done
   local exit_status=0
   wait "$pid" || exit_status=$?
   if [ $exit_status -eq 0 ]; then
-    printf "\r\033[K %b[OK]%b %s\n" "$GREEN" "$RESET" "$msg"
+    printf "\r\033[K %b[OK]%b %s 100%%\n" "$GREEN" "$RESET" "$msg"
   else
     printf "\r\033[K %b[ERR]%b %s\n" "$RED" "$RESET" "$msg"
   fi
