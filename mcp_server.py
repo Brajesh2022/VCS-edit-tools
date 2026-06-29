@@ -16,14 +16,15 @@ from core.store import register, save_snapshot
 
 mcp = FastMCP("vcs-edit")
 
-def _resolve_target(target: str) -> str:
+def _resolve_target(target: str, cwd: str = None) -> str:
     """If target is an existing filepath, snapshot it and return its current blob hash.
     Otherwise assume it's a blob hash and return it.
     """
-    if os.path.exists(target):
-        blob = get_blob_hash(target)
-        register(blob, target)
-        with open(target, "r", encoding="utf-8", errors="replace", newline="") as fh:
+    target_path = os.path.join(cwd, target) if cwd and not os.path.isabs(target) else target
+    if os.path.exists(target_path):
+        blob = get_blob_hash(target_path)
+        register(blob, target_path)
+        with open(target_path, "r", encoding="utf-8", errors="replace", newline="") as fh:
             save_snapshot(blob, fh.read())
         return blob
     return target
@@ -72,9 +73,14 @@ EditOperation = Annotated[
 
 # --- Tools ---
 @mcp.tool()
-def vcs_edit(edits: list[EditOperation]) -> dict:
+def vcs_edit(edits: list[EditOperation], cwd: Optional[str] = None) -> dict:
     """Apply multiple edits (replace/insert/delete/create) efficiently."""
     results = []
+    
+    if cwd:
+        for edit in edits:
+            if not os.path.isabs(edit.filepath):
+                edit.filepath = os.path.join(cwd, edit.filepath)
     
     for i, edit in enumerate(edits):
         try:
@@ -103,7 +109,7 @@ def vcs_edit(edits: list[EditOperation]) -> dict:
             
             # Resolve blob for replace/insert/delete(partial)
             try:
-                blob_hash = _resolve_target(edit.filepath) if not edit.blob else _resolve_target(edit.blob)
+                blob_hash = _resolve_target(edit.filepath, cwd) if not edit.blob else _resolve_target(edit.blob, cwd)
             except Exception as e:
                 results.append({"status": f"error - {str(e)}"})
                 continue
