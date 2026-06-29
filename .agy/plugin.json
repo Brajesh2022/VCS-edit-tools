@@ -1,5 +1,7 @@
 {
   "name": "Dont Touch",
   "version": "1.0.0",
-  "description": "Universal plugin for vcs-edit tools"
+  "description": "Universal plugin for vcs-edit tools",
+  "hooks": "hooks.json",
+  "mcpServers": "mcp.json"
 }

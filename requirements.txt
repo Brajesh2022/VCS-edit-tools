@@ -2,3 +2,5 @@
 # stdlib only: json, os, sys, tempfile, difflib, hashlib, subprocess, argparse
 # dev / test only:
 # pytest>=8.0
+mcp>=1.0.0
+pydantic>=2.0.0

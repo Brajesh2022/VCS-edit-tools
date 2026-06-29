@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "cat /data/data/com.termux/files/home/.gemini/config/plugins/vcs-edit/payload.json"
+        "command": "sh ~/.gemini/config/plugins/vcs-edit/message.sh"
       }
     ]
   }

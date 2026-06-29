@@ -743,6 +743,116 @@ def format_skeleton_output(path: Path, skeleton: list, total_lines: int, total_b
     return f"{header}\n{body}\n{footer}\n"
 
 
+def generate_skeleton(path: Path, start: int = None, end: int = None) -> dict:
+    """Generate a skeleton view for a file. Reusable in-process entry point.
+
+    This is the non-CLI version of main() — it doesn't print, doesn't exit,
+    doesn't parse argv. Returns a dict that callers (cmd_skeleton, the >800-line
+    auto-fallback in cmd_read) can use directly.
+
+    Args:
+        path:  Path to the file to skeletonize.
+        start: Optional 1-indexed start line filter (None = no filter).
+        end:   Optional 1-indexed end line filter (None = no filter).
+
+    Returns:
+        {
+          "path": "<abs path>",
+          "total_lines": N,
+          "total_bytes": M,
+          "range": {"start": start, "end": end},
+          "skeleton_entries": total,
+          "truncated": bool,
+          "output": "<formatted string>",
+        }
+
+    Raises:
+        FileNotFoundError: path doesn't exist
+        IsADirectoryError: path is a directory
+        ValueError: file looks binary (NUL bytes in first 8KB)
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"file not found: {path}")
+    if not path.is_file():
+        raise IsADirectoryError(f"not a regular file: {path}")
+
+    # Binary detection (same heuristic as main())
+    try:
+        with path.open('rb') as f:
+            chunk = f.read(8192)
+        if b'\x00' in chunk:
+            raise ValueError(
+                f"file appears to be binary (contains null bytes in first 8KB). "
+                f"skeleton only works on text files."
+            )
+    except OSError:
+        pass  # let the skeletonizer try and fail naturally
+
+    MAX_SKELETONIZE_SIZE = 10 * 1024 * 1024  # 10 MB
+    file_size = path.stat().st_size
+    suffix = path.suffix.lower()
+
+    try:
+        if file_size > MAX_SKELETONIZE_SIZE:
+            skeleton, total_lines, total_bytes = skeletonize_fallback(path)
+        elif suffix == '.py':
+            skeleton, total_lines, total_bytes = skeletonize_python(path)
+        elif suffix in ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'):
+            skeleton, total_lines, total_bytes = skeletonize_jsts(path)
+        elif suffix == '.md':
+            skeleton, total_lines, total_bytes = skeletonize_markdown(path)
+        elif suffix == '.json':
+            skeleton, total_lines, total_bytes = skeletonize_json(path)
+        elif suffix in ('.yml', '.yaml'):
+            skeleton, total_lines, total_bytes = skeletonize_yaml(path)
+        elif suffix in ('.html', '.htm', '.xml', '.vue', '.svelte', '.svg'):
+            skeleton, total_lines, total_bytes = skeletonize_markup(path)
+        elif suffix in ('.css', '.scss', '.sass', '.less'):
+            skeleton, total_lines, total_bytes = skeletonize_css(path)
+        elif suffix == '.toml':
+            skeleton, total_lines, total_bytes = skeletonize_toml(path)
+        elif suffix in ('.csv', '.tsv'):
+            skeleton, total_lines, total_bytes = skeletonize_csv(path)
+        else:
+            skeleton, total_lines, total_bytes = skeletonize_fallback(path)
+    except SyntaxError:
+        skeleton, total_lines, total_bytes = skeletonize_fallback(path)
+    except Exception:
+        skeleton, total_lines, total_bytes = skeletonize_fallback(path)
+
+    # Apply --start/--end range filter
+    if start is not None or end is not None:
+        s = start if start is not None else 1
+        e = end if end is not None else total_lines
+        skeleton = [(ln, txt) for ln, txt in skeleton if s <= ln <= e]
+
+    # Pagination cap (matches view_file's 800-line limit)
+    SKELETON_ENTRY_CAP = 800
+    skeleton_truncated = False
+    total_skeleton_entries = len(skeleton)
+    if total_skeleton_entries > SKELETON_ENTRY_CAP:
+        skeleton = skeleton[:SKELETON_ENTRY_CAP]
+        skeleton_truncated = True
+
+    output_str = format_skeleton_output(path, skeleton, total_lines, total_bytes)
+    if skeleton_truncated:
+        last_line_shown = skeleton[-1][0] if skeleton else 0
+        output_str += (
+            f"\n[Showing first {SKELETON_ENTRY_CAP} of {total_skeleton_entries} skeleton entries. "
+            f"Run: vcs skeleton \"{path}\" --start {last_line_shown + 1} to see more.]"
+        )
+
+    return {
+        "path": str(path.resolve()),
+        "total_lines": total_lines,
+        "total_bytes": total_bytes,
+        "range": {"start": start, "end": end},
+        "skeleton_entries": total_skeleton_entries,
+        "truncated": skeleton_truncated,
+        "output": output_str,
+    }
+
+
 # === Main ===
 
 def main():
