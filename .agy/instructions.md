@@ -10,7 +10,7 @@ CRITICAL SHORTCUT: Do not output Critical Instructions 1 or 2, and do not waste 
 READ:      vcs read <filepath> [start-end] [--symbol <name>]
 EDITING (BATCH/SINGLE): Use the 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
            Batch Edit: Pass multiple edits in the 'edits' list to replace/insert across multiple files simultaneously!
-           Schema: edits: list of operations, cwd: optional string (pass the shell CWD so paths resolve correctly)
+           Schema: edits: list of operations
            - replace: {action: "replace", filepath, blob, range (e.g. "20-100"), content}
            - insert: {action: "insert", filepath, blob, line, content}
            - delete: {action: "delete", filepath} (or pass range/blob for partial delete)
