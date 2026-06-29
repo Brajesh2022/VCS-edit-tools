@@ -4,11 +4,13 @@
 
 ```
 READ:      vcs read <filepath> [start-end] [--symbol <name>]
-REPLACE:   vcs replace <filepath> <blob> <start-end> << 'EOF' ... EOF
-INSERT:    vcs insert <filepath> <blob> <line> << 'EOF' ... EOF
-DELETE:    vcs delete <filepath> [<blob> <start-end>]       (omit blob+range to delete entire file/dir)
-CREATE:    vcs create <filepath> << 'EOF' ... EOF           (new file with content)
-BATCH:     vcs batch << 'EOF'  === REPLACE <filepath> <blob> <start-end> ===\nnew content... (repeat blocks for more files)  EOF
+EDITING (BATCH/SINGLE): Use the 'vcs_edit' MCP tool (server: vcs-edit) for all modifications.
+           Batch Edit: Pass multiple edits in the 'edits' list to replace/insert across multiple files simultaneously!
+           Schema: edits: list of operations
+           - replace: {action: "replace", filepath, blob, range (e.g. "20-100"), content}
+           - insert: {action: "insert", filepath, blob, line, content}
+           - delete: {action: "delete", filepath} (or pass range/blob for partial delete)
+           - create: {action: "create", filepath, content}
 DIFF:      vcs diff <filepath> <blob>
 SKELETON:  vcs skeleton <filepath> [start-end]              (Returns Code's structural skeleton)
 LIST:      vcs list [path] [--depth N] [--all]              (Prioritise over ls or list tools)
@@ -16,7 +18,6 @@ GREP:      vcs grep <query> [path] [-i]                     (Outputs blob hash f
 FMT:       vcs fmt [--check] [path]                        (auto-format code syntax)
 TEST:      vcs test <cmd> [path]
 STATUS:    vcs status [--prune]                          (list blobs, or prune stale entries)
-
 ```
 
 ## Critical Rules
