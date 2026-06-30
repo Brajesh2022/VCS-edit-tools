@@ -153,7 +153,12 @@ if [[ ${#deps_missing[@]} -gt 0 ]]; then
             if pkg install -y "${pkgs[@]}"; then
                 ok "Dependencies installed via pkg"
             else
-                die "Failed to install dependencies via pkg. Try: pkg install ${pkgs[*]}"
+                echo ""
+                warn "Failed to install dependencies via pkg."
+                warn "Termux package mirrors are often outdated or broken."
+                warn "Please run this command to fix your mirrors:"
+                printf "  %btermux-change-repo%b\n\n" "${BOLD}${CYAN}" "${RESET}"
+                die "Installation aborted. Fix mirrors and try again."
             fi
         # ── Debian / Ubuntu ───────────────────────────────────────────────────
         elif command -v apt-get >/dev/null 2>&1; then
