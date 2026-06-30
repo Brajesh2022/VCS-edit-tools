@@ -54,7 +54,7 @@ spinner() {
 # ── Header ────────────────────────────────────────────────────────────────────
 echo ""
 printf "  %bVCS Edit Tools%b\n" "${BOLD}${CYAN}" "${RESET}"
-printf "  %bUniversal Installer%b\n" "${DIM}" "${RESET}"
+printf "  %bSetup%b\n" "${DIM}" "${RESET}"
 echo ""
 divider
 
@@ -71,9 +71,20 @@ case "${OS}" in
     *)          MACHINE="UNKNOWN:${OS}";;
 esac
 
-if [[ -n "${PREFIX:-}" && "${PREFIX:-}" == *"/usr"* && "${OS:-}" == "Linux" ]]; then
+# Detect Termux: check $TERMUX_VERSION (always set by Termux), or $PREFIX
+# pointing into the Termux data directory, or the existence of the package.
+IS_TERMUX=false
+if [[ -n "${TERMUX_VERSION:-}" ]] \
+   || [[ "${PREFIX:-}" == */com.termux* ]] \
+   || [[ -d "/data/data/com.termux" ]]; then
+    IS_TERMUX=true
+    BIN_DIR="${PREFIX:-/data/data/com.termux/files/usr}/bin"
+    ok "Environment: Termux (Android)"
+elif [[ -n "${PREFIX:-}" && "${PREFIX:-}" == *"/usr"* && "${OS:-}" == "Linux" ]]; then
+    # Legacy heuristic kept as a fallback
+    IS_TERMUX=true
     BIN_DIR="${PREFIX}/bin"
-    ok "Environment: Termux"
+    ok "Environment: Termux (Android)"
 else
     ok "Environment: $MACHINE"
 fi
@@ -97,33 +108,67 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
-deps_missing=false
+deps_missing=()
 for cmd in git python3; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        deps_missing=true
+        deps_missing+=("$cmd")
     fi
 done
 
-if [ "$deps_missing" = true ]; then
+# On Termux, python3 may be installed as 'python' — check that too.
+if $IS_TERMUX && [[ " ${deps_missing[*]} " == *" python3 "* ]]; then
+    if command -v python >/dev/null 2>&1; then
+        # 'python' exists and is Python 3 on Termux — accept it.
+        if python -c "import sys; sys.exit(0 if sys.version_info[0]==3 else 1)" 2>/dev/null; then
+            deps_missing=("${deps_missing[@]/python3}")
+            # Remove empty elements
+            deps_missing=("${deps_missing[@]}")
+            deps_missing=( $(printf '%s\n' "${deps_missing[@]}" | grep -v '^$') ) || true
+        fi
+    fi
+fi
+
+if [[ ${#deps_missing[@]} -gt 0 ]]; then
     if [ "$NON_INTERACTIVE" = true ]; then
-        die "Non-interactive mode: please install missing dependencies (git, python3)."
+        die "Non-interactive mode: please install missing dependencies (${deps_missing[*]})."
     fi
     printf "\n"
-    info "Missing dependencies: git, python3"
+    info "Missing dependencies: ${deps_missing[*]}"
     read -p "  Install missing dependencies automatically? (y/n) " -n 1 -r choice </dev/tty || choice="n"
     printf "\n"
     if [[ "$choice" =~ ^[Yy]$ ]]; then
-        if command -v pkg >/dev/null 2>&1; then
-            pkg install -y git python >/dev/null 2>&1 &
-            spinner $! "Installing via pkg..." || die "Failed to install via pkg."
-        elif command -v apt >/dev/null 2>&1; then
-            (sudo apt update && sudo apt install -y git python3) >/dev/null 2>&1 &
-            spinner $! "Installing via apt..." || die "Failed to install via apt."
+        # ── Termux (Android) ──────────────────────────────────────────────────
+        if $IS_TERMUX; then
+            info "Installing via pkg (Termux)..."
+            # Map python3 → python for Termux's package naming.
+            pkgs=()
+            for dep in "${deps_missing[@]}"; do
+                case "$dep" in
+                    python3) pkgs+=("python") ;;
+                    *)       pkgs+=("$dep")   ;;
+                esac
+            done
+            # Run pkg in the foreground so it can interact with the package
+            # database — backgrounding it can cause "pkg: cannot connect" errors.
+            if pkg install -y "${pkgs[@]}"; then
+                ok "Dependencies installed via pkg"
+            else
+                die "Failed to install dependencies via pkg. Try: pkg install ${pkgs[*]}"
+            fi
+        # ── Debian / Ubuntu ───────────────────────────────────────────────────
+        elif command -v apt-get >/dev/null 2>&1; then
+            (sudo apt-get update -qq && sudo apt-get install -y git python3) >/dev/null 2>&1 &
+            spinner $! "Installing via apt-get..." || die "Failed to install via apt-get."
+        # ── macOS (Homebrew) ──────────────────────────────────────────────────
         elif command -v brew >/dev/null 2>&1; then
             brew install git python3 >/dev/null 2>&1 &
             spinner $! "Installing via brew..." || die "Failed to install via brew."
+        # ── Generic apt fallback ──────────────────────────────────────────────
+        elif command -v apt >/dev/null 2>&1; then
+            (sudo apt update -qq && sudo apt install -y git python3) >/dev/null 2>&1 &
+            spinner $! "Installing via apt..." || die "Failed to install via apt."
         else
-            die "Could not detect package manager. Install manually."
+            die "Could not detect a supported package manager. Install manually: ${deps_missing[*]}"
         fi
     else
         die "Dependencies required."
