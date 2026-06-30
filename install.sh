@@ -153,12 +153,50 @@ if [[ ${#deps_missing[@]} -gt 0 ]]; then
             if pkg install -y "${pkgs[@]}"; then
                 ok "Dependencies installed via pkg"
             else
-                echo ""
-                warn "Failed to install dependencies via pkg."
-                warn "Termux package mirrors are often outdated or broken."
-                warn "Please run this command to fix your mirrors:"
-                printf "  %btermux-change-repo%b\n\n" "${BOLD}${CYAN}" "${RESET}"
-                die "Installation aborted. Fix mirrors and try again."
+                warn "Failed to install dependencies via default pkg mirror."
+                info "Attempting temporary automatic mirror fallbacks..."
+                
+                SOURCES_LIST="${PREFIX:-/data/data/com.termux/files/usr}/etc/apt/sources.list"
+                if [ -f "$SOURCES_LIST" ]; then
+                    cp "$SOURCES_LIST" "${SOURCES_LIST}.bak"
+                    success=false
+                    fallback_mirrors=(
+                        "https://grimler.se/termux/termux-main"
+                        "https://mirrors.bfsu.edu.cn/termux/termux-main"
+                        "https://mirrors.tuna.tsinghua.edu.cn/termux/termux-main"
+                    )
+                    for mirror in "${fallback_mirrors[@]}"; do
+                        info "Trying fallback mirror: $mirror"
+                        echo "deb $mirror stable main" > "$SOURCES_LIST"
+                        if pkg update -y >/dev/null 2>&1 && pkg install -y "${pkgs[@]}"; then
+                            success=true
+                            break
+                        fi
+                    done
+                    
+                    # Restore original broken mirror to avoid silently changing user's system permanently
+                    mv -f "${SOURCES_LIST}.bak" "$SOURCES_LIST"
+                    
+                    if $success; then
+                        ok "Dependencies installed successfully via temporary fallback mirror."
+                        echo ""
+                        warn "Note: Your default Termux package mirror is still broken!"
+                        warn "Please run this command later to permanently fix your mirrors:"
+                        printf "  %btermux-change-repo%b\n\n" "${BOLD}${CYAN}" "${RESET}"
+                    else
+                        echo ""
+                        warn "All temporary fallback mirrors failed."
+                        warn "Please run this command manually to fix your mirrors:"
+                        printf "  %btermux-change-repo%b\n\n" "${BOLD}${CYAN}" "${RESET}"
+                        die "Installation aborted. Fix mirrors and try again."
+                    fi
+                else
+                    echo ""
+                    warn "Could not locate sources.list for automatic fallback."
+                    warn "Please run this command manually to fix your mirrors:"
+                    printf "  %btermux-change-repo%b\n\n" "${BOLD}${CYAN}" "${RESET}"
+                    die "Installation aborted. Fix mirrors and try again."
+                fi
             fi
         # ── Debian / Ubuntu ───────────────────────────────────────────────────
         elif command -v apt-get >/dev/null 2>&1; then
